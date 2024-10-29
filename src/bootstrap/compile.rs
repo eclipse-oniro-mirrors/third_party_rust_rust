@@ -1743,22 +1743,22 @@ pub fn run_cargo(
                 continue;
             }
 
-            let filename = Path::new(&*filename);
+            let filename_path = Path::new(&*filename);
 
             // If this was an output file in the "host dir" we don't actually
             // worry about it, it's not relevant for us
-            if filename.starts_with(&host_root_dir) {
+            if filename_path.starts_with(&host_root_dir) {
                 // Unless it's a proc macro used in the compiler
                 if crate_types.iter().any(|t| t == "proc-macro") {
-                    deps.push((filename.to_path_buf(), DependencyType::Host));
+                    deps.push((filename_path.to_path_buf(), DependencyType::Host));
                 }
                 continue;
             }
 
             // If this was output in the `deps` dir then this is a precise file
             // name (hash included) so we start tracking it.
-            if filename.starts_with(&target_deps_dir) {
-                deps.push((filename.to_path_buf(), DependencyType::Target));
+            if filename_path.starts_with(&target_deps_dir) {
+                deps.push((filename_path.to_path_buf(), DependencyType::Target));
                 continue;
             }
 
@@ -1772,13 +1772,17 @@ pub fn run_cargo(
             // `std-<hash>.dll.lib` on Windows. The aforementioned methods only
             // split the file name by the last extension (`.lib`) while we need
             // to split by all extensions (`.dll.lib`).
-            let expected_len = t!(filename.metadata()).len();
-            let filename = filename.file_name().unwrap().to_str().unwrap();
+            let expected_len = t!(filename_path.metadata()).len();
+            let filename = filename_path.file_name().unwrap().to_str().unwrap();
             let mut parts = filename.splitn(2, '.');
             let file_stem = parts.next().unwrap().to_owned();
             let extension = parts.next().unwrap().to_owned();
 
             toplevel.push((file_stem, extension, expected_len));
+
+            if filename.contains("libstd.so") || filename.contains("libtest.so") {
+                deps.push((filename_path.to_path_buf(), DependencyType::Target));
+            }
         }
     });
 
@@ -1794,6 +1798,9 @@ pub fn run_cargo(
         .map(|e| (e.path(), e.file_name().into_string().unwrap(), t!(e.metadata())))
         .collect::<Vec<_>>();
     for (prefix, extension, expected_len) in toplevel {
+        if prefix.contains("libstd") || prefix.contains("libtest") {
+            continue;
+        }
         let candidates = contents.iter().filter(|&&(_, ref filename, ref meta)| {
             meta.len() == expected_len
                 && filename
