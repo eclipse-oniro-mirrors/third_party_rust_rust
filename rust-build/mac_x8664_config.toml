@@ -1,0 +1,40 @@
+profile = "compiler"
+changelog-seen = 2
+
+[llvm]
+download-ci-llvm = false
+targets = "X86"
+ninja = false
+cflags = "-fstack-protector-all"
+cxxflags = "-fstack-protector-all"
+
+[build]
+submodules = false
+compiler-docs = false
+extended = true
+tools = [
+    "clippy",
+]
+docs = false
+vendor = true
+#verbose = 1
+#sanitizers = true
+profiler = true
+
+[rust]
+optimize = true
+codegen-units = 1
+split-debuginfo = "packed"
+lto = "thin-local"
+backtrace = false
+description = "BiSheng Mobile CPU STD 202.0.0.B009"
+channel = "nightly"
+strip = true
+stack-protector = "all"
+
+[install]
+bindir = "bin"
+libdir = "lib"
+
+[dist]
+compression-formats = ["gz"]
