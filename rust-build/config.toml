@@ -1,0 +1,51 @@
+profile = "compiler"
+changelog-seen = 2
+
+[llvm]
+download-ci-llvm = false
+targets = "X86;AArch64;ARM"
+
+[build]
+target = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnullvm"]
+submodules = false
+compiler-docs = false
+extended = true
+tools = [
+    "clippy",
+]
+docs = false
+vendor = true
+#verbose = 1
+#sanitizers = true
+#profiler = true
+
+[rust]
+optimize = true
+codegen-units = 1
+split-debuginfo = "packed"
+lto = "thin-local"
+backtrace = false
+description = "xxxxx"
+channel = "nightly"
+#strip = true
+#stack-protector = "all"
+
+[install]
+bindir = "bin"
+libdir = "lib"
+
+[target.x86_64-unknown-linux-gnu]
+cc = "clang"
+cxx = "clang++"
+linker = "clang"
+ar = "ar"
+
+[target.x86_64-pc-windows-gnullvm]
+cc = "x86_64-w64-mingw32-clang"
+cxx = "x86_64-w64-mingw32-clang++"
+linker = "x86_64-w64-mingw32-clang"
+ar = "x86_64-w64-mingw32-ar"
+
+[dist]
+compression-formats = ["gz"]
+#include-mingw-linker = false
