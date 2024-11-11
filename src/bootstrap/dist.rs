@@ -668,6 +668,18 @@ impl Step for Std {
         verify_uefi_rlib_format(builder, target, &stamp);
         copy_target_libs(builder, target, &tarball.image_dir(), &stamp);
 
+        // For std of linux-ohos target,
+        // we want to delete metadata-id from the filename, and add '.dylib' for `libstd` and `libtest`.
+        // After changing the filename,
+        // we modify the dependency of `libtest.dylib.so` from `libstd-{metadata-id}.so` to `libstd.dylib.so`.
+        if target.triple.ends_with("-linux-ohos") {
+            let script = builder.src.join("src/bootstrap/std_rename.sh");
+            Command::new("bash")
+                .arg(script)
+                .arg(&target.triple)
+                .output()
+                .expect("Renaming for std fails.");
+        }
         Some(tarball.generate())
     }
 }
