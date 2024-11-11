@@ -1780,7 +1780,8 @@ pub fn run_cargo(
 
             toplevel.push((file_stem, extension, expected_len));
 
-            if filename.contains("libstd.so") || filename.contains("libtest.so") {
+            if filename.contains("libstd.so") || filename.contains("libtest.so") 
+                || filename.contains("std.dll") || filename.contains("test.dll") {
                 deps.push((filename_path.to_path_buf(), DependencyType::Target));
             }
         }
@@ -1798,7 +1799,7 @@ pub fn run_cargo(
         .map(|e| (e.path(), e.file_name().into_string().unwrap(), t!(e.metadata())))
         .collect::<Vec<_>>();
     for (prefix, extension, expected_len) in toplevel {
-        if prefix.contains("libstd") || prefix.contains("libtest") {
+        if prefix.ends_with("std") || prefix.ends_with("test") {
             continue;
         }
         let candidates = contents.iter().filter(|&&(_, ref filename, ref meta)| {
