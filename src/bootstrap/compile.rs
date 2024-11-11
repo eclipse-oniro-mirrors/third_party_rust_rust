@@ -1798,7 +1798,7 @@ pub fn run_cargo(
             meta.len() == expected_len
                 && filename
                     .strip_prefix(&prefix[..])
-                    .map(|s| s.ends_with(&extension[..]))
+                    .map(|s| s.starts_with('-') && s.ends_with(&extension[..]))
                     .unwrap_or(false)
         });
         let max = candidates.max_by_key(|&&(_, _, ref metadata)| {

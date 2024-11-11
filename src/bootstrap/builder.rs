@@ -1512,10 +1512,7 @@ impl<'a> Builder<'a> {
             Mode::Codegen => metadata.push_str("codegen"),
             _ => {}
         }
-
-        if mode != Mode::Std {
-            cargo.env("__CARGO_DEFAULT_LIB_METADATA", &metadata);
-        }
+        cargo.env("__CARGO_DEFAULT_LIB_METADATA", &metadata);
 
         if cmd == "clippy" {
             rustflags.arg("-Zforce-unstable-if-unmarked");
