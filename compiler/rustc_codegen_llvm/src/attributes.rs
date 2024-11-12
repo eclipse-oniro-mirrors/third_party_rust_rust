@@ -60,7 +60,7 @@ pub fn sanitize_attrs<'ll>(
     no_sanitize: SanitizerSet,
 ) -> SmallVec<[&'ll Attribute; 4]> {
     let mut attrs = SmallVec::new();
-    let enabled = cx.tcx.sess.opts.unstable_opts.sanitizer - no_sanitize;
+    let enabled = cx.tcx.sess.opts.cg.sanitizer - no_sanitize;
     if enabled.contains(SanitizerSet::ADDRESS) || enabled.contains(SanitizerSet::KERNELADDRESS) {
         attrs.push(llvm::AttributeKind::SanitizeAddress.create_attr(cx.llcx));
     }
@@ -182,7 +182,7 @@ fn probestack_attr<'ll>(cx: &CodegenCx<'ll, '_>) -> Option<&'ll Attribute> {
     if cx
         .sess()
         .opts
-        .unstable_opts
+        .cg
         .sanitizer
         .intersects(SanitizerSet::ADDRESS | SanitizerSet::THREAD)
     {
