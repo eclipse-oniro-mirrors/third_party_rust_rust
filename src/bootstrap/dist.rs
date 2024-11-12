@@ -1547,12 +1547,9 @@ impl Step for Extended {
                 pkgbuild(name);
             };
             prepare("rustc");
-            prepare("cargo");
             prepare("rust-std");
-            prepare("rust-analysis");
             prepare("clippy");
-            prepare("rust-analyzer");
-            for tool in &["rust-docs", "rust-demangler", "miri"] {
+            for tool in &["rust-docs", "rust-demangler", "miri", "cargo", "rust-analysis", "rust-analyzer"] {
                 if built_tools.contains(tool) {
                     prepare(tool);
                 }
