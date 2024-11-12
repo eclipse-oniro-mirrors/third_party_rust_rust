@@ -36,6 +36,9 @@ const EXTENSION_EXCEPTION_PATHS: &[&str] = &[
     "tests/ui/unused-crate-deps/test.mk", // why would you use make
     "tests/ui/proc-macro/auxiliary/included-file.txt", // more include
     "tests/ui/invalid/foo.natvis.xml", // sample debugger visualizer
+    "tests/ui/std/windows-bat-args1.bat", // tests escaping arguments through batch files
+    "tests/ui/std/windows-bat-args2.bat", // tests escaping arguments through batch files
+    "tests/ui/std/windows-bat-args3.bat", // tests escaping arguments through batch files
 ];
 
 fn check_entries(tests_path: &Path, bad: &mut bool) {
