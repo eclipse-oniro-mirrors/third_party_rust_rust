@@ -83,8 +83,7 @@ cp -r library ${rust_source_dir}
 cp -r src/doc/* ${rust_source_dir}/src/doc
 cp -r src/tools/cargo/* ${rust_source_dir}/src/tools/cargo
 
-cp -r src/llvm-project/* ${rust_source_dir}/src/llvm-project/
-# cp -r ${root_build_dir}/../harmony/third_party_llvm-project/* ${rust_source_dir}/src/llvm-project/
+cp -r ${root_build_dir}/../harmony/third_party_llvm-project/* ${rust_source_dir}/src/llvm-project/
 
 cd ${rust_source_dir}
 if [ "${host_platform}" = "linux" ]; then
