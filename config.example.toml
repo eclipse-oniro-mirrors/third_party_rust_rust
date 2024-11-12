@@ -577,6 +577,13 @@ changelog-seen = 2
 # desired in distributions, for example.
 #rpath = true
 
+# Indicates whether `rustc` should be stripped of symbols using `-Cstrip=symbols`.
+#strip = false
+
+# Indicates whether `rustc` should be compiled with stack protectors.
+# Valid options are : `none`(default),`basic`,`strong`, or `all`.
+#stack-protector = "none"
+
 # Prints each test name as it is executed, to help debug issues in the test harness itself.
 #verbose-tests = false
 
