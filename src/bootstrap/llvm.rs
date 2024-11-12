@@ -680,7 +680,7 @@ fn configure_cmake(
     }
     if builder.config.llvm_clang_cl.is_some() {
         if target.contains("armv7-unknown-linux-ohos") {
-            cflags.push(&format!(" --target={}", "arm-linux-ohos"));
+            cflags.push(&format!(" --target={}", "arm-linux-gnueabi"));
         } else {
             cflags.push(&format!(" --target={}", target));
         }
@@ -696,7 +696,7 @@ fn configure_cmake(
     }
     if builder.config.llvm_clang_cl.is_some() {
         if target.contains("armv7-unknown-linux-ohos") {
-            cxxflags.push(&format!(" --target={}", "arm-linux-ohos"));
+            cxxflags.push(&format!(" --target={}", "arm-linux-gnueabi"));
         } else {
             cxxflags.push(&format!(" --target={}", target));
         }
@@ -955,7 +955,7 @@ impl Step for Sanitizers {
         let mut cfg = cmake::Config::new(&compiler_rt_dir);
         cfg.profile("Release");
         if self.target.triple == "armv7-unknown-linux-ohos" {
-            cfg.define("CMAKE_C_COMPILER_TARGET", "arm-linux-ohos");
+            cfg.define("CMAKE_C_COMPILER_TARGET", "arm-linux-gnueabi");
         } else {
             cfg.define("CMAKE_C_COMPILER_TARGET", self.target.triple);
         }
