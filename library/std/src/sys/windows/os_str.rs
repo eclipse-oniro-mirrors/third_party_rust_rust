@@ -152,6 +152,11 @@ impl Buf {
 
 impl Slice {
     #[inline]
+    pub fn as_encoded_bytes(&self) -> &[u8] {
+        &self.inner.as_inner()
+    }
+
+    #[inline]
     pub fn as_os_str_bytes(&self) -> &[u8] {
         self.inner.as_bytes()
     }

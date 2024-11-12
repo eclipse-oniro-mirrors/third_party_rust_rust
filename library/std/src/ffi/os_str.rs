@@ -707,7 +707,7 @@ impl OsStr {
     ///
     /// [conversions]: super#conversions
     #[inline]
-    #[unstable(feature = "os_str_bytes", issue = "111544")]
+    #[stable(feature = "os_str_bytes", since = "1.71.0")]
     pub unsafe fn from_os_str_bytes_unchecked(bytes: &[u8]) -> &Self {
         Self::from_inner(Slice::from_os_str_bytes_unchecked(bytes))
     }
@@ -820,6 +820,26 @@ impl OsStr {
         OsString { inner: self.inner.to_owned() }
     }
 
+    /// Converts an OS string slice to a byte slice.  To convert the byte slice back into an OS
+    /// string slice, use the [`OsStr::from_encoded_bytes_unchecked`] function.
+    ///
+    /// The byte encoding is an unspecified, platform-specific, self-synchronizing superset of UTF-8.
+    /// By being a self-synchronizing superset of UTF-8, this encoding is also a superset of 7-bit
+    /// ASCII.
+    ///
+    /// Note: As the encoding is unspecified, any sub-slice of bytes that is not valid UTF-8 should
+    /// be treated as opaque and only comparable within the same rust version built for the same
+    /// target platform.  For example, sending the slice over the network or storing it in a file
+    /// will likely result in incompatible byte slices.  See [`OsString`] for more encoding details
+    /// and [`std::ffi`] for platform-specific, specified conversions.
+    ///
+    /// [`std::ffi`]: crate::ffi
+    #[inline]
+    #[stable(feature = "os_str_bytes", since = "1.71.0")]
+    pub fn as_encoded_bytes(&self) -> &[u8] {
+        self.inner.as_encoded_bytes()
+    }
+
     /// Checks whether the `OsStr` is empty.
     ///
     /// # Examples
@@ -897,7 +917,7 @@ impl OsStr {
     ///
     /// [`std::ffi`]: crate::ffi
     #[inline]
-    #[unstable(feature = "os_str_bytes", issue = "111544")]
+    #[stable(feature = "os_str_bytes", since = "1.71.0")]
     pub fn as_os_str_bytes(&self) -> &[u8] {
         self.inner.as_os_str_bytes()
     }

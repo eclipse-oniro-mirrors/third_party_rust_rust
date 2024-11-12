@@ -3,6 +3,7 @@ use crate::ffi::{OsStr, OsString};
 use crate::io;
 use crate::path::{Path, PathBuf, Prefix};
 use crate::ptr;
+use crate::sys::api::utf16;
 
 #[cfg(test)]
 mod tests;
@@ -18,6 +19,10 @@ pub fn is_sep_byte(b: u8) -> bool {
 #[inline]
 pub fn is_verbatim_sep(b: u8) -> bool {
     b == b'\\'
+}
+
+pub fn is_verbatim(path: &[u16]) -> bool {
+    path.starts_with(utf16!(r"\\?\")) || path.starts_with(utf16!(r"\??\"))
 }
 
 /// Returns true if `path` looks like a lone filename.
