@@ -216,6 +216,8 @@ pub struct Config {
     pub rust_debuginfo_level_tests: DebuginfoLevel,
     pub rust_split_debuginfo: SplitDebuginfo,
     pub rust_rpath: bool,
+    pub rust_strip: bool,
+    pub rust_stack_protector: StackProtector,
     pub rustc_parallel: bool,
     pub rustc_default_linker: Option<String>,
     pub rust_optimize_tests: bool,
@@ -397,6 +399,29 @@ impl SplitDebuginfo {
             SplitDebuginfo::Packed
         } else {
             SplitDebuginfo::Off
+        }
+    }
+}
+
+/// Stack protector mode for compiling rustc itself
+#[derive(Default, Clone, PartialEq, Debug)]
+pub enum StackProtector {
+    #[default]
+    None,
+    Basic,
+    Strong,
+    All,
+}
+
+impl std::str::FromStr for StackProtector {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "none" => Ok(StackProtector::None),
+            "basic" => Ok(StackProtector::Basic),
+            "strong" => Ok(StackProtector::Strong),
+            "all" => Ok(StackProtector::All),
+            _ => Err(format!("Invalid value for stack protector: {}", s)),
         }
     }
 }
@@ -947,6 +972,8 @@ define_config! {
         description: Option<String> = "description",
         musl_root: Option<String> = "musl-root",
         rpath: Option<bool> = "rpath",
+        strip: Option<bool> = "strip",
+        stack_protector: Option<String> = "stack-protector",
         verbose_tests: Option<bool> = "verbose-tests",
         optimize_tests: Option<bool> = "optimize-tests",
         codegen_tests: Option<bool> = "codegen-tests",
@@ -1015,6 +1042,7 @@ impl Config {
         config.docs = true;
         config.docs_minification = true;
         config.rust_rpath = true;
+        config.rust_strip = false;
         config.channel = "dev".to_string();
         config.codegen_tests = true;
         config.rust_dist_src = true;
@@ -1351,6 +1379,12 @@ impl Config {
             set(&mut config.rust_optimize_tests, rust.optimize_tests);
             set(&mut config.codegen_tests, rust.codegen_tests);
             set(&mut config.rust_rpath, rust.rpath);
+            set(&mut config.rust_strip, rust.strip);
+            config.rust_stack_protector = rust
+                .stack_protector
+                .as_deref()
+                .map(|value| StackProtector::from_str(value).unwrap())
+                .unwrap_or_default();
             set(&mut config.jemalloc, rust.jemalloc);
             set(&mut config.test_compare_mode, rust.test_compare_mode);
             set(&mut config.backtrace, rust.backtrace);

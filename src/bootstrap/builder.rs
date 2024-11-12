@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::cache::{Cache, Interned, INTERNER};
-use crate::config::{SplitDebuginfo, TargetSelection};
+use crate::config::{SplitDebuginfo, TargetSelection, StackProtector};
 use crate::doc;
 use crate::flags::{Color, Subcommand};
 use crate::install;
@@ -1620,6 +1620,16 @@ impl<'a> Builder<'a> {
                 rustflags.arg(&format!("-Clink-args={}", rpath));
             }
         }
+
+        if self.config.rust_strip {
+            rustflags.arg("-Cstrip=symbols");
+        }
+        match self.config.rust_stack_protector {
+            StackProtector::All => rustflags.arg("-Zstack-protector=all"),
+            StackProtector::Strong => rustflags.arg("-Zstack-protector=strong"),
+            StackProtector::Basic => rustflags.arg("-Zstack-protector=basic"),
+            StackProtector::None => rustflags.arg("-Zstack-protector=none"),
+        };
 
         if let Some(host_linker) = self.linker(compiler.host) {
             cargo.env("RUSTC_HOST_LINKER", host_linker);
