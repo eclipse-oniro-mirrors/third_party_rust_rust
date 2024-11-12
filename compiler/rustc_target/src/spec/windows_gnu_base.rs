@@ -41,6 +41,8 @@ pub fn opts() -> TargetOptions {
         "-lmsvcrt",
         "-luser32",
         "-lkernel32",
+        "-lssp_nonshared",
+        "-lssp",
     ];
     let mut late_link_args =
         TargetOptions::link_args(LinkerFlavor::Gnu(Cc::No, Lld::No), mingw_libs);

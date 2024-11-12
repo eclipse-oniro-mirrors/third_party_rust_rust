@@ -13,7 +13,7 @@ pub fn opts() -> TargetOptions {
     // Order of `late_link_args*` does not matter with LLD.
     let late_link_args = TargetOptions::link_args(
         LinkerFlavor::Gnu(Cc::Yes, Lld::No),
-        &["-lmingw32", "-lmingwex", "-lmsvcrt", "-lkernel32", "-luser32"],
+        &["-lmingw32", "-lmingwex", "-lmsvcrt", "-lkernel32", "-luser32", "-lssp_nonshared", "-lssp"],
     );
 
     TargetOptions {
