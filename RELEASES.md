@@ -4,6 +4,7 @@ Version 1.77.2 (2024-04-09)
 <a id="1.77.2"></a>
 
 - [CVE-2024-24576: fix escaping of Windows batch file arguments in `std::process::Command`](https://blog.rust-lang.org/2024/04/09/cve-2024-24576.html)
+- Fix `Command`'s batch files argument escaping not working when file name has trailing whitespace or periods (CVE-2024-43402).
 
 Version 1.72.0 (2023-08-24)
 ==========================
