@@ -679,7 +679,11 @@ fn configure_cmake(
         }
     }
     if builder.config.llvm_clang_cl.is_some() {
-        cflags.push(&format!(" --target={}", target));
+        if target.contains("armv7-unknown-linux-ohos") {
+            cflags.push(&format!(" --target={}", "arm-linux-gnueabi"));
+        } else {
+            cflags.push(&format!(" --target={}", target));
+        }
     }
     for flag in extra_compiler_flags {
         cflags.push(&format!(" {}", flag));
@@ -691,7 +695,11 @@ fn configure_cmake(
         cxxflags.push(s);
     }
     if builder.config.llvm_clang_cl.is_some() {
-        cxxflags.push(&format!(" --target={}", target));
+        if target.contains("armv7-unknown-linux-ohos") {
+            cxxflags.push(&format!(" --target={}", "arm-linux-gnueabi"));
+        } else {
+            cxxflags.push(&format!(" --target={}", target));
+        }
     }
     for flag in extra_compiler_flags {
         cxxflags.push(&format!(" {}", flag));
@@ -946,7 +954,11 @@ impl Step for Sanitizers {
 
         let mut cfg = cmake::Config::new(&compiler_rt_dir);
         cfg.profile("Release");
-        cfg.define("CMAKE_C_COMPILER_TARGET", self.target.triple);
+        if self.target.triple == "armv7-unknown-linux-ohos" {
+            cfg.define("CMAKE_C_COMPILER_TARGET", "arm-linux-gnueabi");
+        } else {
+            cfg.define("CMAKE_C_COMPILER_TARGET", self.target.triple);
+        }
         cfg.define("COMPILER_RT_BUILD_BUILTINS", "OFF");
         cfg.define("COMPILER_RT_BUILD_CRT", "OFF");
         cfg.define("COMPILER_RT_BUILD_LIBFUZZER", "OFF");
@@ -1033,7 +1045,10 @@ fn supported_sanitizers(
             common_libs("linux", "aarch64", &["asan", "lsan", "msan", "tsan", "hwasan"])
         }
         "aarch64-unknown-linux-ohos" => {
-            common_libs("linux", "aarch64", &["asan", "lsan", "msan", "tsan", "hwasan"])
+            common_libs("linux", "aarch64", &["asan", "lsan", "tsan", "hwasan"])
+        }
+        "armv7-unknown-linux-ohos" => {
+            common_libs("linux", "arm", &["asan", "lsan"])
         }
         "x86_64-apple-darwin" => darwin_libs("osx", &["asan", "lsan", "tsan"]),
         "x86_64-unknown-fuchsia" => common_libs("fuchsia", "x86_64", &["asan"]),
@@ -1049,6 +1064,9 @@ fn supported_sanitizers(
         }
         "x86_64-unknown-linux-musl" => {
             common_libs("linux", "x86_64", &["asan", "lsan", "msan", "tsan"])
+        }
+        "x86_64-unknown-linux-ohos" => {
+            common_libs("linux", "x86_64", &["asan", "lsan", "tsan"])
         }
         "s390x-unknown-linux-gnu" => {
             common_libs("linux", "s390x", &["asan", "lsan", "msan", "tsan"])

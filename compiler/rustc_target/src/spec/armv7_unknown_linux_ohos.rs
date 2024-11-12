@@ -1,4 +1,5 @@
 use crate::spec::{Target, TargetOptions};
+use super::SanitizerSet;
 
 // This target is for OpenHarmony on ARMv7 Linux with thumb-mode, but no NEON or
 // hardfloat.
@@ -22,6 +23,8 @@ pub fn target() -> Target {
             mcount: "\u{1}mcount".into(),
             force_emulated_tls: true,
             has_thread_local: false,
+            supported_sanitizers: SanitizerSet::ADDRESS
+                | SanitizerSet::LEAK,
             ..super::linux_musl_base::opts()
         },
     }
