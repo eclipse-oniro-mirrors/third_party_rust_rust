@@ -56,7 +56,10 @@ if [ "${host_platform}" = "linux" ] && [ ${host_cpu} = "x86_64" ]; then
     cp ${shell_path}/config.toml ${rust_source_dir}
     chmod 750 ${shell_path}/tools/*
     cp ${shell_path}/tools/* ${rust_source_dir}/build/
-    update_config_toml_clang ${rust_tools}/clang/ohos/linux-x86_64/llvm/bin clang llvm-ar
+    update_config_toml_clang ${rust_tools}/ohos-sdk/linux/12/native/llvm/bin clang llvm-ar
+    update_config_toml_clang ${rust_tools}/ohos-sdk/linux/12/native/llvm/bin aarch64-unknown-linux-ohos-clang llvm-ar
+    update_config_toml_clang ${rust_tools}/ohos-sdk/linux/12/native/llvm/bin armv7-unknown-linux-ohos-clang llvm-ar
+    update_config_toml_clang ${rust_tools}/ohos-sdk/linux/12/native/llvm/bin x86_64-unknown-linux-ohos-clang llvm-ar
     update_config_toml_clang ${rust_tools}/mingw-w64/ohos/linux-x86_64/clang-mingw/bin x86_64-w64-mingw32-clang x86_64-w64-mingw32-ar
 elif [ "${host_platform}" = "darwin" ] && [ ${host_cpu} = "x86_64" ]; then
     curl -O -k -m 300 ${rust_down_net}/2023-07-13/rustc-1.71.0-x86_64-apple-darwin.tar.xz
@@ -72,7 +75,7 @@ else
     echo "Unsupported platform: $(uname -s) $(uname -m)"
 fi
 
-mv ${rust_down_dir}/*.tar.xz ${rust_source_dir}/build/cache/2023-07-13/
+cp ${rust_down_dir}/*.tar.xz ${rust_source_dir}/build/cache/2023-07-13/
 
 curl -O -k -m 300 ${rust_down_net}/rustc-1.72.0-src.tar.gz
 tar xf rustc-1.72.0-src.tar.gz
