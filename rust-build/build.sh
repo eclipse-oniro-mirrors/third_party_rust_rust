@@ -27,7 +27,7 @@ case $(uname -m) in
 esac
 
 function update_config_toml_clang(){
-    # $1:clang path, $2:clang name, $4:ar name
+    # $1:clang path, $2:clang name, $3:ar name
 
     # add clang absolute path to shell tools
     sys_clang_dir="$(echo ${1} | sed 's/\//\\\//g')"
@@ -80,13 +80,13 @@ cp ${rust_down_dir}/*.tar.xz ${rust_source_dir}/build/cache/2023-07-13/
 curl -O -k -m 300 ${rust_down_net}/rustc-1.72.0-src.tar.gz
 tar xf rustc-1.72.0-src.tar.gz
 cd ${rust_down_dir}/rustc-1.72.0-src/
-cp -r .cargo/ ${rust_source_dir}
+cp -r .cargo ${rust_source_dir}
 cp -r vendor ${rust_source_dir}
 cp -r library ${rust_source_dir}
 cp -r src/doc/* ${rust_source_dir}/src/doc
 cp -r src/tools/cargo/* ${rust_source_dir}/src/tools/cargo
 
-cp -r ${root_build_dir}/../harmony/third_party_llvm-project/* ${rust_source_dir}/src/llvm-project/
+cp -r ${root_build_dir}/../harmony/llvm/* ${rust_source_dir}/src/llvm-project/
 
 cd ${rust_source_dir}
 if [ "${host_platform}" = "linux" ]; then
