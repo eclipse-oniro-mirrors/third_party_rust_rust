@@ -30,7 +30,7 @@ backtrace = false
 description = "xxxxx"
 channel = "nightly"
 strip = true
-stack-protector = "all"
+stack-protector = "strong"
 
 [install]
 bindir = "bin"
