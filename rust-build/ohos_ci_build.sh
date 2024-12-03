@@ -51,7 +51,7 @@ download_rust() {
 get_new_version() {
     pushd ${root_build_dir}/../harmony/llvm/
     local commit_id_full=$(git rev-parse HEAD)
-    local commit_id_short=$(expr substr "$commit_id_full" 1 10)
+    local commit_id_short=${commit_id_full:1:10}
     new_version="OHOS llvm-preject $commit_id_short"
     popd
 }
