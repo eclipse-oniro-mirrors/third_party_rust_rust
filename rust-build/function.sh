@@ -73,7 +73,9 @@ move_static_rust_source() {
     pushd ${1}
     tar xf rustc-1.72.0-src.tar.gz
     pushd ${1}/rustc-1.72.0-src
-    cp -r {.cargo,vendor,library} ${2}
+    cp -r {.cargo,vendor} ${2}
+    cp -r library/backtrace/* ${2}/library/backtrace/
+    cp -r library/stdarch/* ${2}/library/stdarch/
     cp -r src/doc/* ${2}/src/doc/
     cp -r src/tools/cargo/* ${2}/src/tools/cargo/
     popd
