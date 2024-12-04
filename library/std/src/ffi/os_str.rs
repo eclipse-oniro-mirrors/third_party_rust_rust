@@ -834,6 +834,7 @@ impl OsStr {
     /// and [`std::ffi`] for platform-specific, specified conversions.
     ///
     /// [`std::ffi`]: crate::ffi
+    #[cfg(windows)]
     #[inline]
     #[stable(feature = "os_str_bytes", since = "1.71.0")]
     pub fn as_encoded_bytes(&self) -> &[u8] {
