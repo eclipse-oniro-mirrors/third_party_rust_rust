@@ -163,6 +163,10 @@ main() {
         collect_build_result
         unlock_bep_time
     fi
+    
+    if [ "${host_platform}" = "linux" ]; then
+        check_build_result aarch64-unknown-linux-ohos
+    fi
 
     echo "Building the rust toolchain Completed"
 }

@@ -16,7 +16,9 @@ do
     # Get filename without metadata-id.
     file_prefix=$(echo "$file_prefix" | awk '{split($1, arr, "-"); print arr[1]}')
 
-    if [[ "$file_suffix" != "rlib" && "$file_suffix" != "so" || "$file_prefix" == "librustc_demangle" || "$file_prefix" == "libcfg_if" || "$file_prefix" == "libunwind" ]]
+    if [[ "$file_suffix" != "rlib" && "$file_suffix" != "so" || \
+          "$file_prefix" == "librustc_demangle" || "$file_prefix" == "libcfg_if" || \
+          "$file_prefix" == "libunwind" ]]
     then
         continue
     fi
@@ -37,11 +39,16 @@ do
         newfile_name="$file_prefix.dylib.so"
         if [[ "$file_prefix" == "libtest" ]]
         then
-            # Modify the dependency of `libtest.dylib.so` from `libstd-{metadata-id}.so` to `libstd.dylib.so`.
-            readonly dynstr_section_vaddr=$(readelf -S "$file" | grep ".dynstr" | awk -F']' '{print $2}' | awk '{print strtonum("0x"$3)}')
-            readonly libstd_str_offset=$(readelf -p .dynstr "$file" | grep "libstd-[a-z0-9]\{16\}\.so" | awk -F'[' '{print $2}' | awk '{print $1}' | awk -F']' '{print strtonum("0x"$1)}')
+            # Modify the dependency of `libtest.dylib.so` from `libstd-{metadata-id}.so`
+            # to `libstd.dylib.so`.
+            readonly dynstr_section_vaddr=$(readelf -S "$file" | grep ".dynstr" | \
+                        awk -F']' '{print $2}' | awk '{print strtonum("0x"$3)}')
+            readonly libstd_str_offset=$(readelf -p .dynstr "$file" | \
+                        grep "libstd-[a-z0-9]\{16\}\.so" | awk -F'[' '{print $2}' | \
+                        awk '{print $1}' | awk -F']' '{print strtonum("0x"$1)}')
             readonly libstd_str_vaddr=`expr $dynstr_section_vaddr + $libstd_str_offset`
-            $(printf 'libstd.dylib.so\0\0\0\0\0\0\0\0\0\0\0' | dd of="$file" bs=1 seek=$libstd_str_vaddr count=26 conv=notrunc)
+            $(printf 'libstd.dylib.so\0\0\0\0\0\0\0\0\0\0\0' | \
+                dd of="$file" bs=1 seek=$libstd_str_vaddr count=26 conv=notrunc)
         fi
     fi
 

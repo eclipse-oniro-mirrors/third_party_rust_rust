@@ -16,8 +16,8 @@ detect_platform() {
 copy_config() {
     if [ "${host_platform}" = "linux" ] && [ "${host_cpu}" = "x86_64" ]; then
         cp ${shell_path}/config.toml ${rust_source_dir}
-        chmod 750 ${shell_path}/tools/*
         cp ${shell_path}/tools/* ${rust_source_dir}/build/
+        chmod 750 ${rust_source_dir}/build/*clang*
     elif [ "${host_platform}" = "darwin" ]; then
         if [ "${host_cpu}" = "x86_64" ]; then
             cp ${shell_path}/mac_x8664_config.toml ${rust_source_dir}/config.toml
@@ -74,10 +74,73 @@ move_static_rust_source() {
     tar xf rustc-1.72.0-src.tar.gz
     pushd ${1}/rustc-1.72.0-src
     cp -r {.cargo,vendor} ${2}
-    cp -r library/backtrace/* ${2}/library/backtrace/
-    cp -r library/stdarch/* ${2}/library/stdarch/
-    cp -r src/doc/* ${2}/src/doc/
+    cp -r library/{backtrace,stdarch} ${2}/library/
+    cp -r src/doc/{book,edition-guide,embedded-book,nomicon} ${2}/src/doc/
+    cp -r src/doc/{reference,rust-by-example,rustc-dev-guide} ${2}/src/doc/
     cp -r src/tools/cargo/* ${2}/src/tools/cargo/
     popd
     popd
+}
+
+download_rust_static_source() {
+    local pre_rust_date="2023-07-13"
+    mkdir -p ${rust_static_dir} ${rust_source_dir}/build/cache/${pre_rust_date}
+    local rust_down_net="https://mirrors.ustc.edu.cn/rust-static/dist"
+    pushd ${rust_static_dir}
+    local platform=$1
+    local cpu=$2
+    local files=("rust-std-1.71.0-${cpu}-${platform}.tar.xz" "rustc-1.71.0-${cpu}-${platform}.tar.xz" \
+                 "cargo-1.71.0-${cpu}-${platform}.tar.xz")
+
+    for file in "${files[@]}"; do
+        if [ ! -e "${file}" ]; then
+            curl -O -k -m 300 ${rust_down_net}/${pre_rust_date}/${file} &
+        fi
+    done
+    if [ ! -e "rustc-1.72.0-src.tar.gz" ]; then
+            curl -O -k -m 300 ${rust_down_net}/rustc-1.72.0-src.tar.gz &
+    fi
+    wait
+    popd
+    cp ${rust_static_dir}/*.tar.xz ${rust_source_dir}/build/cache/${pre_rust_date}/
+    cp ${rust_static_dir}/rustc-1.72.0-src.tar.gz ${root_build_dir}
+}
+
+download_rust_at_net() {
+    if [ "${host_platform}" = "linux" ] && [ "${host_cpu}" = "x86_64" ]; then
+        download_rust_static_source "unknown-linux-gnu" "x86_64"
+    elif [ "${host_platform}" = "darwin" ]; then
+        if [ "${host_cpu}" = "x86_64" ]; then
+            download_rust_static_source "apple-darwin" "x86_64"
+        else
+            download_rust_static_source "apple-darwin" "aarch64"
+        fi
+    else
+        echo "Unsupported platform: $(uname -s) $(uname -m)"
+        exit 1
+    fi
+}
+
+check_build_result() {
+    pushd ${install_path}
+    local target_name=${1}
+    tar -xf rust-std-nightly-${1}.tar.gz
+    local file_name="./rust-std-nightly-${1}/rust-std-${1}/lib/rustlib/${1}/lib/libstd.dylib.so"
+    llvm-strip ${file_name}
+    local file_size=$(stat -c%s ${file_name})
+    # so size should not exceed 1.2M
+    rm -rf rust-std-nightly-${1}
+    if [ $file_size -ge 1228000 ]; then
+        echo "${file_name} size exceed 1.2M, size is ${file_size}"
+        exit 1;
+    fi
+    echo "so size is ${file_size}"
+    popd
+}
+
+export_ohos_path() {
+    if [ "${host_platform}" = "linux" ]; then
+        export PATH=${rust_tools}/clang/ohos/linux-x86_64/llvm/bin:$PATH
+        export PATH=${rust_tools}/cmake/linux-x86/bin:$PATH
+    fi
 }

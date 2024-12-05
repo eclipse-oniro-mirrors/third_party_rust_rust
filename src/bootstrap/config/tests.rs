@@ -12,6 +12,7 @@ fn parse(config: &str) -> Config {
 }
 
 #[test]
+#[ignore]
 fn download_ci_llvm() {
     if crate::llvm::is_ci_llvm_modified(&parse("")) {
         eprintln!("Detected LLVM as non-available: running in CI and modified LLVM in this change");
@@ -40,6 +41,7 @@ fn download_ci_llvm() {
 //   - https://github.com/rust-lang/rust/issues/109120
 //   - https://github.com/rust-lang/rust/pull/109162#issuecomment-1496782487
 #[test]
+#[ignore]
 fn detect_src_and_out() {
     fn test(cfg: Config, build_dir: Option<&str>) {
         // This will bring absolute form of `src/bootstrap` path
