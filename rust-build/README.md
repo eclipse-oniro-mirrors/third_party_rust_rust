@@ -1,7 +1,9 @@
 ## Overview
 
-This readme briefly describes how to build  our Rust toolchain.
+This readme briefly describes how to build our Rust toolchain.
 
+## Functionality
+The Rust toolchain is built based on Rust 1.72.0. It is used to provide capability of building ohos image. For detailed information about Rust 1.72.0, please refer to [Rust 1.72.0](https://blog.rust-lang.org/2023/08/24/Rust-1.72.0.html).
 
 ### System Requirements for Toolchain Build
 
@@ -37,13 +39,8 @@ cd harmony
 ```
 git clone https://gitee.com/openharmony/build.git
 export PYTHONIOENCODING=utf-8 && bash build/prebuilts_download.sh
+pip3 install -i https://repo.huaweicloud.com/repository/pypi/simple requests
 python3 ./build/scripts/download_sdk.py --branch OpenHarmony-5.0.0-Release --product-name ohos-sdk-full-5.0.0 --api-version 12
-
-cd prebuilts/
-# Extract the downloaded sdk, version may different.
-tar -xf version-Master_Version-OpenHarmony_5.0.0.71-20241201_020108-ohos-sdk-full-5.0.0.tar.gz
-unzip ohos-sdk/linux/native-linux-x64-5.0.0.71-Release.zip -d ohos-sdk/linux/12
-cd -
 ```
 
 3、download build code
