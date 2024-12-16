@@ -690,8 +690,6 @@ impl OsStr {
     /// # Example
     ///
     /// ```
-    /// #![feature(os_str_bytes)]
-    ///
     /// use std::ffi::OsStr;
     ///
     /// let os_str = OsStr::new("Mary had a little lamb");
@@ -821,7 +819,7 @@ impl OsStr {
     }
 
     /// Converts an OS string slice to a byte slice.  To convert the byte slice back into an OS
-    /// string slice, use the [`OsStr::from_encoded_bytes_unchecked`] function.
+    /// string slice.
     ///
     /// The byte encoding is an unspecified, platform-specific, self-synchronizing superset of UTF-8.
     /// By being a self-synchronizing superset of UTF-8, this encoding is also a superset of 7-bit
@@ -834,7 +832,6 @@ impl OsStr {
     /// and [`std::ffi`] for platform-specific, specified conversions.
     ///
     /// [`std::ffi`]: crate::ffi
-    #[cfg(windows)]
     #[inline]
     #[stable(feature = "os_str_bytes", since = "1.71.0")]
     pub fn as_encoded_bytes(&self) -> &[u8] {
