@@ -53,8 +53,7 @@ main() {
 
     pushd ${rust_source_dir}
     export_ohos_path
-    # clear cache before build
-    sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+
     python3 ./x.py dist
     collect_build_result
     if [ "${host_platform}" = "linux" ]; then
