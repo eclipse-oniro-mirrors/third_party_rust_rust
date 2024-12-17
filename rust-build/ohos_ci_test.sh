@@ -18,7 +18,6 @@ main() {
     download_rust_at_net
     copy_config
     update_config_clang ${oh_tools} ${mingw_tools}
-    sed -i "s/nightly/beta/g" ${rust_source_dir}/config.toml
     sed -i "s/target = .*/target = [\"x86_64-unknown-linux-gnu\"]/g" ${rust_source_dir}/config.toml
     move_static_rust_source ${rust_static_dir} ${rust_source_dir}
 
@@ -33,14 +32,6 @@ main() {
         fi
         exclude_file="$exclude_file --exclude $line"
     done < ${shell_path}/exclude_test.txt
-    # Downloading through repo does not have an origin remote, but the Rust test code uses
-    # the origin remote information. Add origin remote information through this method.
-    # search "refs/remotes/origin" at rust code.
-    if [ -z $(git remote | grep "origin") ]; then
-        local address=$(echo $(git remote -v | grep fetch) | awk '{print $2}')
-        git remote add origin ${address}
-        git fetch -f origin
-    fi
 
     test_suite_dir=("assembly" "codegen" "codegen-units" "incremental" "mir-opt"
                     "pretty" "run-coverage" "run-coverage-rustdoc" "run-make" "run-make-fulldeps"
@@ -51,9 +42,8 @@ main() {
     do
         all_test_suite="${all_test_suite} tests/${element}"
     done
-    # clear cache before test
-    sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
-    python3 ./x.py test --stage=2 tidy ${all_test_suite} $exclude_file --no-fail-fast
+
+    python3 ./x.py test --stage=2 ${all_test_suite} $exclude_file --no-fail-fast
 
     popd
     echo "test the rust toolchain Completed"
