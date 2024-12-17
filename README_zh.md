@@ -235,8 +235,8 @@ Windows 构建三元组有
     - x86_64-pc-windows-msvc
 
 在调用 `x.py` 命令时，可通过指定 `--build=<triple>` 来指定三重编译。
-命令时指定 `--build=<triple>` 或创建一个 `config.toml` 文件（参见
-[在类 Unix 系统上构建](#在类 Unix 系统上构建)中所述），并通过
+命令时指定 `--build=<triple>` 或创建一个 `config.toml` 文件(参见
+[在类 Unix 系统上构建](#在类-unix-系统上构建)中所述)，并通过
 `--set build.build=<triple>` 到 `./configure`。
 
 ## 构建文档
@@ -272,7 +272,7 @@ Windows 构建三元组有
 
 ## 投稿
 
-请参见 [CONTRIBUTING.md](贡献.md)。
+请参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ### 许可
 
