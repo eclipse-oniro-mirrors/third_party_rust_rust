@@ -144,3 +144,63 @@ export_ohos_path() {
         export PATH=${rust_tools}/cmake/linux-x86/bin:$PATH
     fi
 }
+
+download_rust() {
+    local pre_rust_date="2023-07-13"
+    mkdir -p ${rust_source_dir}/build/cache/${pre_rust_date}
+    if [ "${host_platform}" = "linux" ] && [ ${host_cpu} = "x86_64" ]; then
+        if [ ! -d "${root_build_dir}/opensource" ]; then
+            artget pull -ap "${root_build_dir}/opensource" -os "${ci_shell_dir}/rust1.72.0.xml" -at opensource
+            artget pull -ap "${root_build_dir}/opensource" -os "${ci_shell_dir}/rust1.71.0_linux.xml" -at opensource
+        fi
+    elif [ "${host_platform}" = "darwin" ]; then
+        artget pull -ap "${root_build_dir}/opensource" -os "${ci_shell_dir}/rust1.72.0.xml" -at opensource
+        if [ ${host_cpu} = "x86_64" ]; then
+            artget pull -ap "${root_build_dir}/opensource" -os "${ci_shell_dir}/rust1.71.0_mac_x86.xml" -at opensource
+        elif [ ${host_cpu} = "arm64" ]; then
+            artget pull -ap "${root_build_dir}/opensource" -os "${ci_shell_dir}/rust1.71.0_mac_arm.xml" -at opensource
+        fi
+    fi
+    cp ${root_build_dir}/opensource/Rust/1.71.0/* ${rust_source_dir}/build/cache/${pre_rust_date}
+}
+
+get_exclude_file() {
+    while read line; do
+        if [ -z "$line" ]; then
+                break
+        fi
+        # get fail repository
+        tag=$(echo $line | cut -d ']' -f 1 | tr -d '[')
+        # get fail test case
+        content=$(echo $line | cut -d ']' -f 2-)
+        case $tag in
+            "all")
+                exclude_file="$exclude_file --exclude $content"
+                ;;
+            "mobile")
+                if [ "${1}" = "mobile" ]; then
+                    exclude_file="$exclude_file --exclude $content"
+                fi
+                ;;
+            "ohos")
+                if [ "${1}" = "ohos" ]; then
+                    exclude_file="$exclude_file --exclude $content"
+                fi
+                ;;
+            *)
+                echo "Unknown tag: $tag"
+                ;;
+        esac
+    done < ${shell_path}/exclude_test.txt
+}
+
+get_test_suite() {
+    test_suite_dir=("assembly" "codegen" "codegen-units" "incremental" "mir-opt"
+                    "pretty" "run-coverage" "run-coverage-rustdoc" "run-make" "run-make-fulldeps"
+                    "run-pass-valgrind" "rustdoc" "rustdoc-js" "rustdoc-js-std"
+                    "rustdoc-json" "rustdoc-ui" "ui" "ui-fulldeps")
+    for element in "${test_suite_dir[@]}"
+    do
+        all_test_suite="${all_test_suite} tests/${element}"
+    done
+}

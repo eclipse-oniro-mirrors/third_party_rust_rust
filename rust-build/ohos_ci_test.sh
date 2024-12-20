@@ -8,9 +8,10 @@ readonly rust_tools="${root_build_dir}/prebuilts"
 readonly rust_static_dir="${root_build_dir}/rust_download"
 readonly oh_tools="${rust_tools}/ohos-sdk/linux/12/native/llvm/bin"
 readonly mingw_tools="${rust_tools}/mingw-w64/ohos/linux-x86_64/clang-mingw/bin"
+exclude_file=""
+all_test_suite=""
 
 source ${shell_path}/function.sh
-exclude_file=""
 
 main() {
     detect_platform
@@ -26,26 +27,11 @@ main() {
 
     pushd ${rust_source_dir}
     export_ohos_path
-    while read line; do
-        if [ -z "$line" ]; then
-             break
-        fi
-        exclude_file="$exclude_file --exclude $line"
-    done < ${shell_path}/exclude_test.txt
-
-    test_suite_dir=("assembly" "codegen" "codegen-units" "incremental" "mir-opt"
-                    "pretty" "run-coverage" "run-coverage-rustdoc" "run-make" "run-make-fulldeps"
-                    "run-pass-valgrind" "rustdoc" "rustdoc-js" "rustdoc-js-std"
-                    "rustdoc-json" "rustdoc-ui" "ui" "ui-fulldeps")
-    all_test_suite=""
-    for element in "${test_suite_dir[@]}"
-    do
-        all_test_suite="${all_test_suite} tests/${element}"
-    done
-
+    get_test_suite
+    get_exclude_file "ohos"
     python3 ./x.py test --stage=2 ${all_test_suite} $exclude_file --no-fail-fast
-
     popd
+
     echo "test the rust toolchain Completed"
 }
 

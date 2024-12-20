@@ -7,9 +7,9 @@ readonly rust_source_dir="${shell_path}/.."
 readonly ci_shell_dir="${root_build_dir}/build/rustbuild/"
 readonly install_path="${rust_source_dir}/build/dist"
 readonly output_install="${root_build_dir}/output/"
-readonly oh_tools="/usr1/mobile_cpu/BiSheng/bin"
+readonly oh_tools="/opt/buildtools/mobile_cpu/BiSheng/bin"
 readonly mingw_tools="/opt/buildtools/llvm-mingw-20220906/bin"
-readonly bep_home="/opt/buildtools/secBepkit-2.2.0"
+readonly bep_home="/opt/buildtools/secBepkit-2.2.0.2"
 readonly old_version="xxxxx"
 new_version="xxxxx"
 bep_build=false
@@ -42,25 +42,6 @@ parse_options() {
     done
     shift $((OPTIND - 1))
     return 0
-}
-
-download_rust() {
-    local pre_rust_date="2023-07-13"
-    mkdir -p ${rust_source_dir}/build/cache/${pre_rust_date}
-    if [ "${host_platform}" = "linux" ] && [ ${host_cpu} = "x86_64" ]; then
-        if [ ! -d "${root_build_dir}/opensource" ]; then
-            artget pull -ap "${root_build_dir}/opensource" -os "${ci_shell_dir}/rust1.72.0.xml" -at opensource
-            artget pull -ap "${root_build_dir}/opensource" -os "${ci_shell_dir}/rust1.71.0_linux.xml" -at opensource
-        fi
-    elif [ "${host_platform}" = "darwin" ]; then
-        artget pull -ap "${root_build_dir}/opensource" -os "${ci_shell_dir}/rust1.72.0.xml" -at opensource
-        if [ ${host_cpu} = "x86_64" ]; then
-            artget pull -ap "${root_build_dir}/opensource" -os "${ci_shell_dir}/rust1.71.0_mac_x86.xml" -at opensource
-        elif [ ${host_cpu} = "arm64" ]; then
-            artget pull -ap "${root_build_dir}/opensource" -os "${ci_shell_dir}/rust1.71.0_mac_arm.xml" -at opensource
-        fi
-    fi
-    cp ${root_build_dir}/opensource/Rust/1.71.0/* ${rust_source_dir}/build/cache/${pre_rust_date}
 }
 
 bep_prepare() {
@@ -152,6 +133,7 @@ main() {
 
     if [ ${bep_build} = true ]; then
         bep_prepare
+        lock_bep_time
     fi
 
     pushd ${rust_source_dir}
@@ -159,7 +141,6 @@ main() {
     popd
 
     if [ ${bep_build} = true ]; then
-        lock_bep_time
         collect_build_result
         unlock_bep_time
     fi
