@@ -53,13 +53,13 @@ main() {
 
     pushd ${rust_source_dir}
     export_ohos_path
-
     python3 ./x.py dist
     collect_build_result
     if [ "${host_platform}" = "linux" ]; then
         check_build_result aarch64-unknown-linux-ohos
     fi
     popd
+
     echo "Building the rust toolchain Completed"
 }
 
