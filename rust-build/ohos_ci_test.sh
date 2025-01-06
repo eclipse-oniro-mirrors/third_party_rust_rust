@@ -23,7 +23,7 @@ main() {
     move_static_rust_source ${rust_static_dir} ${rust_source_dir}
 
     rm -rf ${rust_source_dir}/src/llvm-project/*
-    cp -r ${root_build_dir}/../harmony/llvm/* ${rust_source_dir}/src/llvm-project/
+    cp -r ${root_build_dir}/third_party/llvm-project/* ${rust_source_dir}/src/llvm-project/
 
     pushd ${rust_source_dir}
     export_ohos_path

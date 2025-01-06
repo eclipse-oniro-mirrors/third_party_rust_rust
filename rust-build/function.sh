@@ -85,7 +85,7 @@ move_static_rust_source() {
 download_rust_static_source() {
     local pre_rust_date="2023-07-13"
     mkdir -p ${rust_static_dir} ${rust_source_dir}/build/cache/${pre_rust_date}
-    local rust_down_net="https://mirrors.ustc.edu.cn/rust-static/dist"
+    local rust_down_net="https://repo.huaweicloud.com/harmonyos/compiler/rust"
     pushd ${rust_static_dir}
     local platform=$1
     local cpu=$2
@@ -94,11 +94,11 @@ download_rust_static_source() {
 
     for file in "${files[@]}"; do
         if [ ! -e "${file}" ]; then
-            curl -O -k -m 300 ${rust_down_net}/${pre_rust_date}/${file} &
+            curl -O -k -m 300 ${rust_down_net}/1.71.0/${file} &
         fi
     done
     if [ ! -e "rustc-1.72.0-src.tar.gz" ]; then
-            curl -O -k -m 300 ${rust_down_net}/rustc-1.72.0-src.tar.gz &
+            curl -O -k -m 300 ${rust_down_net}/1.72.0/rustc-1.72.0-src.tar.gz &
     fi
     wait
     popd
