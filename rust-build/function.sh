@@ -97,10 +97,11 @@ download_rust_static_source() {
             curl -O -k -m 300 ${rust_down_net}/1.71.0/${file} &
         fi
     done
-    if [ ! -e "rustc-1.72.0-src.tar.gz" ]; then
-            curl -O -k -m 300 ${rust_down_net}/1.72.0/rustc-1.72.0-src.tar.gz &
-    fi
     wait
+
+    if [ ! -e "rustc-1.72.0-src.tar.gz" ]; then
+            curl -O -k -m 600 ${rust_down_net}/1.72.0/rustc-1.72.0-src.tar.gz
+    fi
     popd
     cp ${rust_static_dir}/*.tar.xz ${rust_source_dir}/build/cache/${pre_rust_date}/
     cp ${rust_static_dir}/rustc-1.72.0-src.tar.gz ${root_build_dir}
