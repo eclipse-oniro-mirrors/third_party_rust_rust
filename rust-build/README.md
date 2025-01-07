@@ -46,7 +46,7 @@ python3 ./build/scripts/download_sdk.py --branch OpenHarmony-5.0.0-Release --pro
 3、download build code
 
 ```
-git clone --depth=1 https://gitee.com/openharmony/third_party_llvm-project.git llvm
+git clone --depth=1 https://gitee.com/openharmony/third_party_llvm-project.git third_party/llvm-project
 git clone --depth=1 https://gitee.com/openharmony-sig/third_party_rust_rust.git third_party/rust/rust
 ```
 
