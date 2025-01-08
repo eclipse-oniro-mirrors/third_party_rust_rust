@@ -21,18 +21,19 @@ main() {
     update_config_clang ${oh_tools} ${mingw_tools}
     sed -i "s/target = .*/target = [\"x86_64-unknown-linux-gnu\"]/g" ${rust_source_dir}/config.toml
     move_static_rust_source ${rust_static_dir} ${rust_source_dir}
-
     rm -rf ${rust_source_dir}/src/llvm-project/*
     cp -r ${root_build_dir}/third_party/llvm-project/* ${rust_source_dir}/src/llvm-project/
+    echo "Copy the llvm source code completely"
 
     pushd ${rust_source_dir}
     export_ohos_path
     get_test_suite
     get_exclude_file "ohos"
+    echo "Test the rust toolchain begin"
     python3 ./x.py test --stage=2 ${all_test_suite} $exclude_file --no-fail-fast
     popd
 
-    echo "test the rust toolchain Completed"
+    echo "Test the rust toolchain Completed"
 }
 
 main
