@@ -20,6 +20,7 @@ get_new_version() {
     local commit_id_full=$(git rev-parse HEAD)
     local commit_id_short=${commit_id_full:0:10}
     new_version="OHOS llvm-project $commit_id_short"
+    echo "New version is 'OHOS llvm-project $commit_id_short'"
     popd
 }
 
@@ -40,19 +41,20 @@ collect_build_result() {
 
 main() {
     detect_platform
-    rm -rf ${rust_source_dir}/build/*
+    clean
     download_rust_at_net
     copy_config
     update_config_clang ${oh_tools} ${mingw_tools}
     get_new_version
     update_version
     move_static_rust_source ${rust_static_dir} ${rust_source_dir}
-
     rm -rf ${rust_source_dir}/src/llvm-project/*
     cp -r ${root_build_dir}/third_party/llvm-project/*  ${rust_source_dir}/src/llvm-project/
+    echo "Copy the llvm source code completely"
 
     pushd ${rust_source_dir}
     export_ohos_path
+    echo "Building the rust toolchain begin"
     python3 ./x.py dist
     collect_build_result
     if [ "${host_platform}" = "linux" ]; then
