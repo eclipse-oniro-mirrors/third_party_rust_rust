@@ -507,6 +507,7 @@ impl Step for Rustc {
             cp("LICENSE-APACHE");
             cp("LICENSE-MIT");
             cp("README.md");
+            cp("NOTICE");
         }
     }
 }
