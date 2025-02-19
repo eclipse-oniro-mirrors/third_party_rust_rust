@@ -52,14 +52,25 @@ update_config_clang_path() {
     sed -i "s/ar = \"${3}\"/ar = \"${sys_clang_dir}\/${3}\"/g" ${rust_source_dir}/config.toml
 }
 
+update_musl_head_file_path() {
+    # $1:musl head file path, $2 clang name
+    # add musl head file path to shell tools
+    musl_head_file_dir="$(echo ${1} | sed 's/\//\\\//g')"
+    sed -i "s/-Imusl/-I${musl_head_file_dir}/g" ${rust_source_dir}/build/${2}
+    sed -i "s/-Imusl/-I${musl_head_file_dir}/g" ${rust_source_dir}/build/${2}++
+}
+
 update_config_clang() {
-    # $1:OH clang path $2:mingw clang path
+    # $1:OH clang path $2:mingw clang path $3:musl head file path
     if [ "${host_platform}" = "linux" ] && [ ${host_cpu} = "x86_64" ]; then
         update_config_clang_path ${1} clang llvm-ar
         update_config_clang_path ${1} aarch64-unknown-linux-ohos-clang llvm-ar
         update_config_clang_path ${1} armv7-unknown-linux-ohos-clang llvm-ar
         update_config_clang_path ${1} x86_64-unknown-linux-ohos-clang llvm-ar
         update_config_clang_path ${2} x86_64-w64-mingw32-clang x86_64-w64-mingw32-ar
+        update_musl_head_file_path ${3} aarch64-unknown-linux-ohos-clang
+        update_musl_head_file_path ${3} armv7-unknown-linux-ohos-clang
+        update_musl_head_file_path ${3} x86_64-unknown-linux-ohos-clang
     fi
 }
 

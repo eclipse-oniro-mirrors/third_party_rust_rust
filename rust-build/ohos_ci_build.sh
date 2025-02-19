@@ -10,6 +10,7 @@ readonly output_install="${root_build_dir}/output/"
 readonly rust_static_dir="${root_build_dir}/rust_download"
 readonly oh_tools="${rust_tools}/ohos-sdk/linux/12/native/llvm/bin"
 readonly mingw_tools="${rust_tools}/mingw-w64/ohos/linux-x86_64/clang-mingw/bin"
+readonly musl_head_file_path="${root_build_dir}/third_party/musl/include/linux"
 readonly old_version="xxxxx"
 new_version="xxxxx"
 
@@ -44,7 +45,7 @@ main() {
     clean
     download_rust_at_net
     copy_config
-    update_config_clang ${oh_tools} ${mingw_tools}
+    update_config_clang ${oh_tools} ${mingw_tools} ${musl_head_file_path}
     get_new_version
     update_version
     move_static_rust_source ${rust_static_dir} ${rust_source_dir}
