@@ -46,8 +46,9 @@ python3 ./build/scripts/download_sdk.py --branch OpenHarmony-5.0.0-Release --pro
 3、download build code
 
 ```
-git clone --depth=1 https://gitee.com/openharmony/third_party_llvm-project.git third_party/llvm-project
-git clone --depth=1 https://gitee.com/openharmony/third_party_rust_rust.git third_party/rust/rust
+repo init -u https://gitee.com/OpenHarmony/manifest.git -b master -m rust-toolchain.xml
+repo sync -c
+repo forall -c 'git lfs pull'
 ```
 
 4、start to build
