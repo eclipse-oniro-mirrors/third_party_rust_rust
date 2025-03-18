@@ -16,7 +16,7 @@ MacOS >= 13.0
 Ubuntu
 
 ```bash
-sudo apt install gcc llvm python cmake openssl pkg-config git unzip ninja-build python3-distutils gawk curl python3-pip
+sudo apt install gcc llvm python cmake openssl pkg-config git unzip ninja-build python3-distutils gawk curl python3-pip libtinfo5
 ```
 
 Mac
@@ -40,7 +40,7 @@ cd harmony
 git clone https://gitee.com/openharmony/build.git
 export PYTHONIOENCODING=utf-8 && bash build/prebuilts_download.sh
 pip3 install -i https://repo.huaweicloud.com/repository/pypi/simple requests
-python3 ./build/scripts/download_sdk.py --branch OpenHarmony-5.0.0-Release --product-name ohos-sdk-full-5.0.0 --api-version 12
+python3 ./build/scripts/download_sdk.py --branch OpenHarmony-5.1.0-Release --product-name ohos-sdk-full_api_5.1.0-Release --api-version 18
 ```
 
 3、download build code
