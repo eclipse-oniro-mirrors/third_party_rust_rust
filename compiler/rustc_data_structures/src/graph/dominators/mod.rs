@@ -9,10 +9,11 @@
 //! Thomas Lengauer and Robert Endre Tarjan.
 //! <https://www.cs.princeton.edu/courses/archive/spr03/cs423/download/dominators.pdf>
 
-use super::ControlFlowGraph;
+use std::cmp::Ordering;
+
 use rustc_index::{Idx, IndexSlice, IndexVec};
 
-use std::cmp::Ordering;
+use super::ControlFlowGraph;
 
 #[cfg(test)]
 mod tests;
@@ -23,10 +24,46 @@ struct PreOrderFrame<Iter> {
 }
 
 rustc_index::newtype_index! {
+    #[orderable]
     struct PreorderIndex {}
 }
 
-pub fn dominators<G: ControlFlowGraph>(graph: &G) -> Dominators<G::Node> {
+#[derive(Clone, Debug)]
+pub struct Dominators<Node: Idx> {
+    kind: Kind<Node>,
+}
+
+#[derive(Clone, Debug)]
+enum Kind<Node: Idx> {
+    /// A representation optimized for a small path graphs.
+    Path,
+    General(Inner<Node>),
+}
+
+pub fn dominators<G: ControlFlowGraph>(g: &G) -> Dominators<G::Node> {
+    // We often encounter MIR bodies with 1 or 2 basic blocks. Special case the dominators
+    // computation and representation for those cases.
+    if is_small_path_graph(g) {
+        Dominators { kind: Kind::Path }
+    } else {
+        Dominators { kind: Kind::General(dominators_impl(g)) }
+    }
+}
+
+fn is_small_path_graph<G: ControlFlowGraph>(g: &G) -> bool {
+    if g.start_node().index() != 0 {
+        return false;
+    }
+    if g.num_nodes() == 1 {
+        return true;
+    }
+    if g.num_nodes() == 2 {
+        return g.successors(g.start_node()).any(|n| n.index() == 1);
+    }
+    false
+}
+
+fn dominators_impl<G: ControlFlowGraph>(graph: &G) -> Inner<G::Node> {
     // compute the post order index (rank) for each node
     let mut post_order_rank = IndexVec::from_elem_n(0, graph.num_nodes());
 
@@ -36,7 +73,7 @@ pub fn dominators<G: ControlFlowGraph>(graph: &G) -> Dominators<G::Node> {
         IndexVec::with_capacity(graph.num_nodes());
 
     let mut stack = vec![PreOrderFrame {
-        pre_order_idx: PreorderIndex::new(0),
+        pre_order_idx: PreorderIndex::ZERO,
         iter: graph.successors(graph.start_node()),
     }];
     let mut pre_order_to_real: IndexVec<PreorderIndex, G::Node> =
@@ -44,20 +81,20 @@ pub fn dominators<G: ControlFlowGraph>(graph: &G) -> Dominators<G::Node> {
     let mut real_to_pre_order: IndexVec<G::Node, Option<PreorderIndex>> =
         IndexVec::from_elem_n(None, graph.num_nodes());
     pre_order_to_real.push(graph.start_node());
-    parent.push(PreorderIndex::new(0)); // the parent of the root node is the root for now.
-    real_to_pre_order[graph.start_node()] = Some(PreorderIndex::new(0));
+    parent.push(PreorderIndex::ZERO); // the parent of the root node is the root for now.
+    real_to_pre_order[graph.start_node()] = Some(PreorderIndex::ZERO);
     let mut post_order_idx = 0;
 
     // Traverse the graph, collecting a number of things:
     //
     // * Preorder mapping (to it, and back to the actual ordering)
-    // * Postorder mapping (used exclusively for rank_partial_cmp on the final product)
+    // * Postorder mapping (used exclusively for `cmp_in_dominator_order` on the final product)
     // * Parents for each vertex in the preorder tree
     //
     // These are all done here rather than through one of the 'standard'
     // graph traversals to help make this fast.
     'recurse: while let Some(frame) = stack.last_mut() {
-        while let Some(successor) = frame.iter.next() {
+        for successor in frame.iter.by_ref() {
             if real_to_pre_order[successor].is_none() {
                 let pre_order_idx = pre_order_to_real.push(successor);
                 real_to_pre_order[successor] = Some(pre_order_idx);
@@ -75,7 +112,7 @@ pub fn dominators<G: ControlFlowGraph>(graph: &G) -> Dominators<G::Node> {
 
     let reachable_vertices = pre_order_to_real.len();
 
-    let mut idom = IndexVec::from_elem_n(PreorderIndex::new(0), reachable_vertices);
+    let mut idom = IndexVec::from_elem_n(PreorderIndex::ZERO, reachable_vertices);
     let mut semi = IndexVec::from_fn_n(std::convert::identity, reachable_vertices);
     let mut label = semi.clone();
     let mut bucket = IndexVec::from_elem_n(vec![], reachable_vertices);
@@ -176,9 +213,7 @@ pub fn dominators<G: ControlFlowGraph>(graph: &G) -> Dominators<G::Node> {
             //
             // ...this may be the case if a MirPass modifies the CFG to remove
             // or rearrange certain blocks/edges.
-            let Some(v) = real_to_pre_order[v] else {
-                continue
-            };
+            let Some(v) = real_to_pre_order[v] else { continue };
 
             // eval returns a vertex x from which semi[x] is minimum among
             // vertices semi[v] +> x *> v.
@@ -247,7 +282,7 @@ pub fn dominators<G: ControlFlowGraph>(graph: &G) -> Dominators<G::Node> {
 
     let time = compute_access_time(start_node, &immediate_dominators);
 
-    Dominators { start_node, post_order_rank, immediate_dominators, time }
+    Inner { post_order_rank, immediate_dominators, time }
 }
 
 /// Evaluate the link-eval virtual forest, providing the currently minimum semi
@@ -312,12 +347,11 @@ fn compress(
 
 /// Tracks the list of dominators for each node.
 #[derive(Clone, Debug)]
-pub struct Dominators<N: Idx> {
-    start_node: N,
+struct Inner<N: Idx> {
     post_order_rank: IndexVec<N, usize>,
     // Even though we track only the immediate dominator of each node, it's
     // possible to get its full list of dominators by looking up the dominator
-    // of each dominator. (See the `impl Iterator for Iter` definition).
+    // of each dominator.
     immediate_dominators: IndexVec<N, Option<N>>,
     time: IndexVec<N, Time>,
 }
@@ -325,27 +359,35 @@ pub struct Dominators<N: Idx> {
 impl<Node: Idx> Dominators<Node> {
     /// Returns true if node is reachable from the start node.
     pub fn is_reachable(&self, node: Node) -> bool {
-        node == self.start_node || self.immediate_dominators[node].is_some()
+        match &self.kind {
+            Kind::Path => true,
+            Kind::General(g) => g.time[node].start != 0,
+        }
     }
 
     /// Returns the immediate dominator of node, if any.
     pub fn immediate_dominator(&self, node: Node) -> Option<Node> {
-        self.immediate_dominators[node]
-    }
-
-    /// Provides an iterator over each dominator up the CFG, for the given Node.
-    /// See the `impl Iterator for Iter` definition to understand how this works.
-    pub fn dominators(&self, node: Node) -> Iter<'_, Node> {
-        assert!(self.is_reachable(node), "node {node:?} is not reachable");
-        Iter { dom_tree: self, node: Some(node) }
+        match &self.kind {
+            Kind::Path => {
+                if 0 < node.index() {
+                    Some(Node::new(node.index() - 1))
+                } else {
+                    None
+                }
+            }
+            Kind::General(g) => g.immediate_dominators[node],
+        }
     }
 
     /// Provide deterministic ordering of nodes such that, if any two nodes have a dominator
     /// relationship, the dominator will always precede the dominated. (The relative ordering
     /// of two unrelated nodes will also be consistent, but otherwise the order has no
     /// meaning.) This method cannot be used to determine if either Node dominates the other.
-    pub fn rank_partial_cmp(&self, lhs: Node, rhs: Node) -> Option<Ordering> {
-        self.post_order_rank[rhs].partial_cmp(&self.post_order_rank[lhs])
+    pub fn cmp_in_dominator_order(&self, lhs: Node, rhs: Node) -> Ordering {
+        match &self.kind {
+            Kind::Path => lhs.index().cmp(&rhs.index()),
+            Kind::General(g) => g.post_order_rank[rhs].cmp(&g.post_order_rank[lhs]),
+        }
     }
 
     /// Returns true if `a` dominates `b`.
@@ -353,28 +395,16 @@ impl<Node: Idx> Dominators<Node> {
     /// # Panics
     ///
     /// Panics if `b` is unreachable.
+    #[inline]
     pub fn dominates(&self, a: Node, b: Node) -> bool {
-        let a = self.time[a];
-        let b = self.time[b];
-        assert!(b.start != 0, "node {b:?} is not reachable");
-        a.start <= b.start && b.finish <= a.finish
-    }
-}
-
-pub struct Iter<'dom, Node: Idx> {
-    dom_tree: &'dom Dominators<Node>,
-    node: Option<Node>,
-}
-
-impl<'dom, Node: Idx> Iterator for Iter<'dom, Node> {
-    type Item = Node;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(node) = self.node {
-            self.node = self.dom_tree.immediate_dominator(node);
-            Some(node)
-        } else {
-            None
+        match &self.kind {
+            Kind::Path => a.index() <= b.index(),
+            Kind::General(g) => {
+                let a = g.time[a];
+                let b = g.time[b];
+                assert!(b.start != 0, "node {b:?} is not reachable");
+                a.start <= b.start && b.finish <= a.finish
+            }
         }
     }
 }

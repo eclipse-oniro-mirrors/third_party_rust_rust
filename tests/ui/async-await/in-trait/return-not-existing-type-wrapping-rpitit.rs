@@ -1,8 +1,5 @@
-// edition:2021
-// [next] compile-flags: -Zlower-impl-trait-in-trait-to-assoc-ty
-// revisions: current next
+//@ edition:2021
 
-#![feature(return_position_impl_trait_in_trait)]
 
 struct Wrapper<T>(T);
 

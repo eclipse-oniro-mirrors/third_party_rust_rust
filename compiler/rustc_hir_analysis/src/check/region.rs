@@ -6,22 +6,22 @@
 //!
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/borrow_check.html
 
-use rustc_ast::walk_list;
+use std::mem;
+
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::{self, Visitor};
-use rustc_hir::{Arm, Block, Expr, Local, Pat, PatKind, Stmt};
+use rustc_hir::{Arm, Block, Expr, LetStmt, Pat, PatKind, Stmt};
 use rustc_index::Idx;
+use rustc_middle::bug;
 use rustc_middle::middle::region::*;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::source_map;
-use rustc_span::Span;
-
-use std::mem;
+use tracing::debug;
 
 #[derive(Debug, Copy, Clone)]
-pub struct Context {
+struct Context {
     /// The scope that contains any new variables declared, plus its depth in
     /// the scope tree.
     var_parent: Option<(Scope, ScopeDepth)>,
@@ -70,11 +70,7 @@ struct RegionResolutionVisitor<'tcx> {
 }
 
 /// Records the lifetime of a local variable as `cx.var_parent`
-fn record_var_lifetime(
-    visitor: &mut RegionResolutionVisitor<'_>,
-    var_id: hir::ItemLocalId,
-    _sp: Span,
-) {
+fn record_var_lifetime(visitor: &mut RegionResolutionVisitor<'_>, var_id: hir::ItemLocalId) {
     match visitor.cx.var_parent {
         None => {
             // this can happen in extern fn declarations like
@@ -126,7 +122,7 @@ fn resolve_block<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, blk: &'tcx h
 
         for (i, statement) in blk.stmts.iter().enumerate() {
             match statement.kind {
-                hir::StmtKind::Local(hir::Local { els: Some(els), .. }) => {
+                hir::StmtKind::Let(LetStmt { els: Some(els), .. }) => {
                     // Let-else has a special lexical structure for variables.
                     // First we take a checkpoint of the current scope context here.
                     let mut prev_cx = visitor.cx;
@@ -149,7 +145,7 @@ fn resolve_block<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, blk: &'tcx h
                     // From now on, we continue normally.
                     visitor.cx = prev_cx;
                 }
-                hir::StmtKind::Local(..) | hir::StmtKind::Item(..) => {
+                hir::StmtKind::Let(..) => {
                     // Each declaration introduces a subscope for bindings
                     // introduced by the declaration; this subscope covers a
                     // suffix of the block. Each subscope in a block has the
@@ -163,24 +159,45 @@ fn resolve_block<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, blk: &'tcx h
                     visitor.cx.var_parent = visitor.cx.parent;
                     visitor.visit_stmt(statement)
                 }
+                hir::StmtKind::Item(..) => {
+                    // Don't create scopes for items, since they won't be
+                    // lowered to THIR and MIR.
+                }
                 hir::StmtKind::Expr(..) | hir::StmtKind::Semi(..) => visitor.visit_stmt(statement),
             }
         }
-        walk_list!(visitor, visit_expr, &blk.expr);
+        if let Some(tail_expr) = blk.expr {
+            if visitor.tcx.features().shorter_tail_lifetimes
+                && blk.span.edition().at_least_rust_2024()
+            {
+                visitor.terminating_scopes.insert(tail_expr.hir_id.local_id);
+            }
+            visitor.visit_expr(tail_expr);
+        }
     }
 
     visitor.cx = prev_cx;
 }
 
 fn resolve_arm<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, arm: &'tcx hir::Arm<'tcx>) {
+    fn has_let_expr(expr: &Expr<'_>) -> bool {
+        match &expr.kind {
+            hir::ExprKind::Binary(_, lhs, rhs) => has_let_expr(lhs) || has_let_expr(rhs),
+            hir::ExprKind::Let(..) => true,
+            _ => false,
+        }
+    }
+
     let prev_cx = visitor.cx;
 
-    visitor.enter_scope(Scope { id: arm.hir_id.local_id, data: ScopeData::Node });
+    visitor.terminating_scopes.insert(arm.hir_id.local_id);
+
+    visitor.enter_node_scope_with_dtor(arm.hir_id.local_id);
     visitor.cx.var_parent = visitor.cx.parent;
 
-    visitor.terminating_scopes.insert(arm.body.hir_id.local_id);
-
-    if let Some(hir::Guard::If(expr)) = arm.guard {
+    if let Some(expr) = arm.guard
+        && !has_let_expr(expr)
+    {
         visitor.terminating_scopes.insert(expr.hir_id.local_id);
     }
 
@@ -194,7 +211,7 @@ fn resolve_pat<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, pat: &'tcx hir
 
     // If this is a binding then record the lifetime of that binding.
     if let PatKind::Binding(..) = pat.kind {
-        record_var_lifetime(visitor, pat.hir_id.local_id, pat.span);
+        record_var_lifetime(visitor, pat.hir_id.local_id);
     }
 
     debug!("resolve_pat - pre-increment {} pat = {:?}", visitor.expr_and_pat_count, pat);
@@ -410,11 +427,11 @@ fn resolve_expr<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, expr: &'tcx h
             // then we'll assign too low a count to any `yield` expressions
             // we encounter in 'right_expression' - they should really occur after all of the
             // expressions in 'left_expression'.
-            visitor.visit_expr(&right_expr);
+            visitor.visit_expr(right_expr);
             visitor.pessimistic_yield = prev_pessimistic;
 
             debug!("resolve_expr - restoring pessimistic_yield to {}", prev_pessimistic);
-            visitor.visit_expr(&left_expr);
+            visitor.visit_expr(left_expr);
             debug!("resolve_expr - fixing up counts to {}", visitor.expr_and_pat_count);
 
             // Remove and process any scopes pushed by the visitor
@@ -449,7 +466,12 @@ fn resolve_expr<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, expr: &'tcx h
 
         hir::ExprKind::If(cond, then, Some(otherwise)) => {
             let expr_cx = visitor.cx;
-            visitor.enter_scope(Scope { id: then.hir_id.local_id, data: ScopeData::IfThen });
+            let data = if expr.span.at_least_rust_2024() && visitor.tcx.features().if_let_rescope {
+                ScopeData::IfThenRescope
+            } else {
+                ScopeData::IfThen
+            };
+            visitor.enter_scope(Scope { id: then.hir_id.local_id, data });
             visitor.cx.var_parent = visitor.cx.parent;
             visitor.visit_expr(cond);
             visitor.visit_expr(then);
@@ -459,7 +481,12 @@ fn resolve_expr<'tcx>(visitor: &mut RegionResolutionVisitor<'tcx>, expr: &'tcx h
 
         hir::ExprKind::If(cond, then, None) => {
             let expr_cx = visitor.cx;
-            visitor.enter_scope(Scope { id: then.hir_id.local_id, data: ScopeData::IfThen });
+            let data = if expr.span.at_least_rust_2024() && visitor.tcx.features().if_let_rescope {
+                ScopeData::IfThenRescope
+            } else {
+                ScopeData::IfThen
+            };
+            visitor.enter_scope(Scope { id: then.hir_id.local_id, data });
             visitor.cx.var_parent = visitor.cx.parent;
             visitor.visit_expr(cond);
             visitor.visit_expr(then);
@@ -578,7 +605,7 @@ fn resolve_local<'tcx>(
     // due to rule C.
 
     if let Some(expr) = init {
-        record_rvalue_scope_if_borrow_expr(visitor, &expr, blk_scope);
+        record_rvalue_scope_if_borrow_expr(visitor, expr, blk_scope);
 
         if let Some(pat) = pat {
             if is_binding_pat(pat) {
@@ -594,7 +621,7 @@ fn resolve_local<'tcx>(
     }
 
     // Make sure we visit the initializer first, so expr_and_pat_count remains correct.
-    // The correct order, as shared between generator_interior, drop_ranges and intravisitor,
+    // The correct order, as shared between coroutine_interior, drop_ranges and intravisitor,
     // is to walk initializer, followed by pattern bindings, finally followed by the `else` block.
     if let Some(expr) = init {
         visitor.visit_expr(expr);
@@ -639,30 +666,30 @@ fn resolve_local<'tcx>(
         // & expression, and its lifetime would be extended to the end of the block (due
         // to a different rule, not the below code).
         match pat.kind {
-            PatKind::Binding(hir::BindingAnnotation(hir::ByRef::Yes, _), ..) => true,
+            PatKind::Binding(hir::BindingMode(hir::ByRef::Yes(_), _), ..) => true,
 
-            PatKind::Struct(_, field_pats, _) => {
-                field_pats.iter().any(|fp| is_binding_pat(&fp.pat))
-            }
+            PatKind::Struct(_, field_pats, _) => field_pats.iter().any(|fp| is_binding_pat(fp.pat)),
 
             PatKind::Slice(pats1, pats2, pats3) => {
-                pats1.iter().any(|p| is_binding_pat(&p))
-                    || pats2.iter().any(|p| is_binding_pat(&p))
-                    || pats3.iter().any(|p| is_binding_pat(&p))
+                pats1.iter().any(|p| is_binding_pat(p))
+                    || pats2.iter().any(|p| is_binding_pat(p))
+                    || pats3.iter().any(|p| is_binding_pat(p))
             }
 
             PatKind::Or(subpats)
             | PatKind::TupleStruct(_, subpats, _)
-            | PatKind::Tuple(subpats, _) => subpats.iter().any(|p| is_binding_pat(&p)),
+            | PatKind::Tuple(subpats, _) => subpats.iter().any(|p| is_binding_pat(p)),
 
-            PatKind::Box(subpat) => is_binding_pat(&subpat),
+            PatKind::Box(subpat) | PatKind::Deref(subpat) => is_binding_pat(subpat),
 
             PatKind::Ref(_, _)
-            | PatKind::Binding(hir::BindingAnnotation(hir::ByRef::No, _), ..)
+            | PatKind::Binding(hir::BindingMode(hir::ByRef::No, _), ..)
             | PatKind::Wild
+            | PatKind::Never
             | PatKind::Path(_)
             | PatKind::Lit(_)
-            | PatKind::Range(_, _, _) => false,
+            | PatKind::Range(_, _, _)
+            | PatKind::Err(_) => false,
         }
     }
 
@@ -674,6 +701,8 @@ fn resolve_local<'tcx>(
     ///        | [ ..., E&, ... ]
     ///        | ( ..., E&, ... )
     ///        | {...; E&}
+    ///        | if _ { ...; E& } else { ...; E& }
+    ///        | match _ { ..., _ => E&, ... }
     ///        | box E&
     ///        | E& as ...
     ///        | ( E& )
@@ -696,20 +725,31 @@ fn resolve_local<'tcx>(
             }
             hir::ExprKind::Struct(_, fields, _) => {
                 for field in fields {
-                    record_rvalue_scope_if_borrow_expr(visitor, &field.expr, blk_id);
+                    record_rvalue_scope_if_borrow_expr(visitor, field.expr, blk_id);
                 }
             }
             hir::ExprKind::Array(subexprs) | hir::ExprKind::Tup(subexprs) => {
                 for subexpr in subexprs {
-                    record_rvalue_scope_if_borrow_expr(visitor, &subexpr, blk_id);
+                    record_rvalue_scope_if_borrow_expr(visitor, subexpr, blk_id);
                 }
             }
             hir::ExprKind::Cast(subexpr, _) => {
-                record_rvalue_scope_if_borrow_expr(visitor, &subexpr, blk_id)
+                record_rvalue_scope_if_borrow_expr(visitor, subexpr, blk_id)
             }
             hir::ExprKind::Block(block, _) => {
                 if let Some(subexpr) = block.expr {
-                    record_rvalue_scope_if_borrow_expr(visitor, &subexpr, blk_id);
+                    record_rvalue_scope_if_borrow_expr(visitor, subexpr, blk_id);
+                }
+            }
+            hir::ExprKind::If(_, then_block, else_block) => {
+                record_rvalue_scope_if_borrow_expr(visitor, then_block, blk_id);
+                if let Some(else_block) = else_block {
+                    record_rvalue_scope_if_borrow_expr(visitor, else_block, blk_id);
+                }
+            }
+            hir::ExprKind::Match(_, arms, _) => {
+                for arm in arms {
+                    record_rvalue_scope_if_borrow_expr(visitor, arm.body, blk_id);
                 }
             }
             hir::ExprKind::Call(..) | hir::ExprKind::MethodCall(..) => {
@@ -745,7 +785,7 @@ impl<'tcx> RegionResolutionVisitor<'tcx> {
 
     fn enter_node_scope_with_dtor(&mut self, id: hir::ItemLocalId) {
         // If node was previously marked as a terminating scope during the
-        // recursive visit of its parent node in the AST, then we need to
+        // recursive visit of its parent node in the HIR, then we need to
         // account for the destruction scope representing the scope of
         // the destructors that run immediately after it completes.
         if self.terminating_scopes.contains(&id) {
@@ -753,25 +793,8 @@ impl<'tcx> RegionResolutionVisitor<'tcx> {
         }
         self.enter_scope(Scope { id, data: ScopeData::Node });
     }
-}
 
-impl<'tcx> Visitor<'tcx> for RegionResolutionVisitor<'tcx> {
-    fn visit_block(&mut self, b: &'tcx Block<'tcx>) {
-        resolve_block(self, b);
-    }
-
-    fn visit_body(&mut self, body: &'tcx hir::Body<'tcx>) {
-        let body_id = body.id();
-        let owner_id = self.tcx.hir().body_owner_def_id(body_id);
-
-        debug!(
-            "visit_body(id={:?}, span={:?}, body.id={:?}, cx.parent={:?})",
-            owner_id,
-            self.tcx.sess.source_map().span_to_diagnostic_string(body.value.span),
-            body_id,
-            self.cx.parent
-        );
-
+    fn enter_body(&mut self, hir_id: hir::HirId, f: impl FnOnce(&mut Self)) {
         // Save all state that is specific to the outer function
         // body. These will be restored once down below, once we've
         // visited the body.
@@ -783,53 +806,72 @@ impl<'tcx> Visitor<'tcx> for RegionResolutionVisitor<'tcx> {
         // control flow assumptions. This doesn't apply to nested
         // bodies within the `+=` statements. See #69307.
         let outer_pessimistic_yield = mem::replace(&mut self.pessimistic_yield, false);
-        self.terminating_scopes.insert(body.value.hir_id.local_id);
+        self.terminating_scopes.insert(hir_id.local_id);
 
-        self.enter_scope(Scope { id: body.value.hir_id.local_id, data: ScopeData::CallSite });
-        self.enter_scope(Scope { id: body.value.hir_id.local_id, data: ScopeData::Arguments });
+        self.enter_scope(Scope { id: hir_id.local_id, data: ScopeData::CallSite });
+        self.enter_scope(Scope { id: hir_id.local_id, data: ScopeData::Arguments });
 
-        // The arguments and `self` are parented to the fn.
-        self.cx.var_parent = self.cx.parent.take();
-        for param in body.params {
-            self.visit_pat(&param.pat);
-        }
-
-        // The body of the every fn is a root scope.
-        self.cx.parent = self.cx.var_parent;
-        if self.tcx.hir().body_owner_kind(owner_id).is_fn_or_closure() {
-            self.visit_expr(&body.value)
-        } else {
-            // Only functions have an outer terminating (drop) scope, while
-            // temporaries in constant initializers may be 'static, but only
-            // according to rvalue lifetime semantics, using the same
-            // syntactical rules used for let initializers.
-            //
-            // e.g., in `let x = &f();`, the temporary holding the result from
-            // the `f()` call lives for the entirety of the surrounding block.
-            //
-            // Similarly, `const X: ... = &f();` would have the result of `f()`
-            // live for `'static`, implying (if Drop restrictions on constants
-            // ever get lifted) that the value *could* have a destructor, but
-            // it'd get leaked instead of the destructor running during the
-            // evaluation of `X` (if at all allowed by CTFE).
-            //
-            // However, `const Y: ... = g(&f());`, like `let y = g(&f());`,
-            // would *not* let the `f()` temporary escape into an outer scope
-            // (i.e., `'static`), which means that after `g` returns, it drops,
-            // and all the associated destruction scope rules apply.
-            self.cx.var_parent = None;
-            resolve_local(self, None, Some(&body.value));
-        }
-
-        if body.generator_kind.is_some() {
-            self.scope_tree.body_expr_count.insert(body_id, self.expr_and_pat_count);
-        }
+        f(self);
 
         // Restore context we had at the start.
         self.expr_and_pat_count = outer_ec;
         self.cx = outer_cx;
         self.terminating_scopes = outer_ts;
         self.pessimistic_yield = outer_pessimistic_yield;
+    }
+}
+
+impl<'tcx> Visitor<'tcx> for RegionResolutionVisitor<'tcx> {
+    fn visit_block(&mut self, b: &'tcx Block<'tcx>) {
+        resolve_block(self, b);
+    }
+
+    fn visit_body(&mut self, body: &hir::Body<'tcx>) {
+        let body_id = body.id();
+        let owner_id = self.tcx.hir().body_owner_def_id(body_id);
+
+        debug!(
+            "visit_body(id={:?}, span={:?}, body.id={:?}, cx.parent={:?})",
+            owner_id,
+            self.tcx.sess.source_map().span_to_diagnostic_string(body.value.span),
+            body_id,
+            self.cx.parent
+        );
+
+        self.enter_body(body.value.hir_id, |this| {
+            if this.tcx.hir().body_owner_kind(owner_id).is_fn_or_closure() {
+                // The arguments and `self` are parented to the fn.
+                this.cx.var_parent = this.cx.parent.take();
+                for param in body.params {
+                    this.visit_pat(param.pat);
+                }
+
+                // The body of the every fn is a root scope.
+                this.cx.parent = this.cx.var_parent;
+                this.visit_expr(body.value)
+            } else {
+                // Only functions have an outer terminating (drop) scope, while
+                // temporaries in constant initializers may be 'static, but only
+                // according to rvalue lifetime semantics, using the same
+                // syntactical rules used for let initializers.
+                //
+                // e.g., in `let x = &f();`, the temporary holding the result from
+                // the `f()` call lives for the entirety of the surrounding block.
+                //
+                // Similarly, `const X: ... = &f();` would have the result of `f()`
+                // live for `'static`, implying (if Drop restrictions on constants
+                // ever get lifted) that the value *could* have a destructor, but
+                // it'd get leaked instead of the destructor running during the
+                // evaluation of `X` (if at all allowed by CTFE).
+                //
+                // However, `const Y: ... = g(&f());`, like `let y = g(&f());`,
+                // would *not* let the `f()` temporary escape into an outer scope
+                // (i.e., `'static`), which means that after `g` returns, it drops,
+                // and all the associated destruction scope rules apply.
+                this.cx.var_parent = None;
+                resolve_local(this, None, Some(body.value));
+            }
+        })
     }
 
     fn visit_arm(&mut self, a: &'tcx Arm<'tcx>) {
@@ -844,8 +886,8 @@ impl<'tcx> Visitor<'tcx> for RegionResolutionVisitor<'tcx> {
     fn visit_expr(&mut self, ex: &'tcx Expr<'tcx>) {
         resolve_expr(self, ex);
     }
-    fn visit_local(&mut self, l: &'tcx Local<'tcx>) {
-        resolve_local(self, Some(&l.pat), l.init)
+    fn visit_local(&mut self, l: &'tcx LetStmt<'tcx>) {
+        resolve_local(self, Some(l.pat), l.init)
     }
 }
 
@@ -856,13 +898,13 @@ impl<'tcx> Visitor<'tcx> for RegionResolutionVisitor<'tcx> {
 /// re-use in incremental scenarios. We may sometimes need to rerun the
 /// type checker even when the HIR hasn't changed, and in those cases
 /// we can avoid reconstructing the region scope tree.
-pub fn region_scope_tree(tcx: TyCtxt<'_>, def_id: DefId) -> &ScopeTree {
+pub(crate) fn region_scope_tree(tcx: TyCtxt<'_>, def_id: DefId) -> &ScopeTree {
     let typeck_root_def_id = tcx.typeck_root_def_id(def_id);
     if typeck_root_def_id != def_id {
         return tcx.region_scope_tree(typeck_root_def_id);
     }
 
-    let scope_tree = if let Some(body_id) = tcx.hir().maybe_body_owned_by(def_id.expect_local()) {
+    let scope_tree = if let Some(body) = tcx.hir().maybe_body_owned_by(def_id.expect_local()) {
         let mut visitor = RegionResolutionVisitor {
             tcx,
             scope_tree: ScopeTree::default(),
@@ -873,9 +915,8 @@ pub fn region_scope_tree(tcx: TyCtxt<'_>, def_id: DefId) -> &ScopeTree {
             fixup_scopes: vec![],
         };
 
-        let body = tcx.hir().body(body_id);
         visitor.scope_tree.root_body = Some(body.value.hir_id);
-        visitor.visit_body(body);
+        visitor.visit_body(&body);
         visitor.scope_tree
     } else {
         ScopeTree::default()

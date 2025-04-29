@@ -1,4 +1,4 @@
-// compile-flags: -O -C no-prepopulate-passes
+//@ compile-flags: -O -C no-prepopulate-passes
 
 #![crate_type = "lib"]
 
@@ -9,7 +9,7 @@ pub fn test(a: u32, b: u32) -> u32 {
     // CHECK: %c = add i32 %a, %b
     let d = c;
     let e = d * a;
-    // CHECK-NEXT: %0 = mul i32 %c, %a
+    // CHECK-NEXT: %e = mul i32 %c, %a
     e
-    // CHECK-NEXT: ret i32 %0
+    // CHECK-NEXT: ret i32 %e
 }

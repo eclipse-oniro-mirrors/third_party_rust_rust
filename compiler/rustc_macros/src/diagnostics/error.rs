@@ -1,7 +1,8 @@
 use proc_macro::{Diagnostic, Level, MultiSpan};
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{spanned::Spanned, Attribute, Error as SynError, Meta};
+use syn::spanned::Spanned;
+use syn::{Attribute, Error as SynError, Meta};
 
 #[derive(Debug)]
 pub(crate) enum DiagnosticDeriveError {
@@ -14,7 +15,7 @@ impl DiagnosticDeriveError {
         match self {
             DiagnosticDeriveError::SynError(e) => e.to_compile_error(),
             DiagnosticDeriveError::ErrorHandled => {
-                // Return ! to avoid having to create a blank DiagnosticBuilder to return when an
+                // Return ! to avoid having to create a blank Diag to return when an
                 // error has already been emitted to the compiler.
                 quote! {
                     { unreachable!(); }

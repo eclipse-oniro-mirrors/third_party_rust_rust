@@ -1,5 +1,3 @@
-#![feature(lazy_cell)]
-#![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![warn(rust_2018_idioms, unused_lifetimes)]
 
 use std::ffi::OsStr;
@@ -18,18 +16,20 @@ impl Message {
     fn new(path: PathBuf) -> Self {
         // we don't want the first letter after "error: ", "help: " ... to be capitalized
         // also no punctuation (except for "?" ?) at the end of a line
+        // Prefer "try" over "try this".
         static REGEX_SET: LazyLock<RegexSet> = LazyLock::new(|| {
             RegexSet::new([
                 "error: [A-Z]",
                 "help: [A-Z]",
                 "warning: [A-Z]",
                 "note: [A-Z]",
-                "try this: [A-Z]",
+                "try: [A-Z]",
                 "error: .*[.!]$",
                 "help: .*[.!]$",
                 "warning: .*[.!]$",
                 "note: .*[.!]$",
-                "try this: .*[.!]$",
+                "try: .*[.!]$",
+                "try this",
             ])
             .unwrap()
         });

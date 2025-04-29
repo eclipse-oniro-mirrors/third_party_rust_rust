@@ -1,10 +1,9 @@
-use super::{const_io_error, Custom, Error, ErrorData, ErrorKind, Repr, SimpleMessage};
+use super::{Custom, Error, ErrorData, ErrorKind, Repr, SimpleMessage, const_io_error};
 use crate::assert_matches::assert_matches;
-use crate::error;
-use crate::fmt;
 use crate::mem::size_of;
 use crate::sys::decode_error_kind;
 use crate::sys::os::error_string;
+use crate::{error, fmt};
 
 #[test]
 fn test_size() {
@@ -95,7 +94,8 @@ fn test_errorkind_packing() {
 
 #[test]
 fn test_simple_message_packing() {
-    use super::{ErrorKind::*, SimpleMessage};
+    use super::ErrorKind::*;
+    use super::SimpleMessage;
     macro_rules! check_simple_msg {
         ($err:expr, $kind:ident, $msg:literal) => {{
             let e = &$err;
@@ -157,7 +157,7 @@ impl error::Error for E {}
 fn test_std_io_error_downcast() {
     // Case 1: custom error, downcast succeeds
     let io_error = Error::new(ErrorKind::Other, Bojji(true));
-    let e: Box<Bojji> = io_error.downcast().unwrap();
+    let e: Bojji = io_error.downcast().unwrap();
     assert!(e.0);
 
     // Case 2: custom error, downcast fails
@@ -166,7 +166,7 @@ fn test_std_io_error_downcast() {
 
     //   ensures that the custom error is intact
     assert_eq!(ErrorKind::Other, io_error.kind());
-    let e: Box<Bojji> = io_error.downcast().unwrap();
+    let e: Bojji = io_error.downcast().unwrap();
     assert!(e.0);
 
     // Case 3: os error

@@ -4,16 +4,15 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::mpsc::Sender;
 
-use super::__rust_begin_short_backtrace;
-use super::bench::Bencher;
-use super::event::CompletedTest;
-use super::options;
-
 pub use NamePadding::*;
 pub use TestFn::*;
 pub use TestName::*;
 
-/// Type of the test according to the [rust book](https://doc.rust-lang.org/cargo/guide/tests.html)
+use super::bench::Bencher;
+use super::event::CompletedTest;
+use super::{__rust_begin_short_backtrace, options};
+
+/// Type of the test according to the [Rust book](https://doc.rust-lang.org/cargo/guide/tests.html)
 /// conventions.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TestType {
@@ -224,7 +223,7 @@ impl TestDesc {
         }
     }
 
-    /// Returns None for ignored test or that that are just run, otherwise give a description of the type of test.
+    /// Returns None for ignored test or tests that are just run, otherwise returns a description of the type of test.
     /// Descriptions include "should panic", "compile fail" and "compile".
     pub fn test_mode(&self) -> Option<&'static str> {
         if self.ignore {
@@ -250,4 +249,38 @@ impl TestDesc {
 pub struct TestDescAndFn {
     pub desc: TestDesc,
     pub testfn: TestFn,
+}
+
+impl TestDescAndFn {
+    pub const fn new_doctest(
+        test_name: &'static str,
+        ignore: bool,
+        source_file: &'static str,
+        start_line: usize,
+        no_run: bool,
+        should_panic: bool,
+        testfn: TestFn,
+    ) -> Self {
+        Self {
+            desc: TestDesc {
+                name: StaticTestName(test_name),
+                ignore,
+                ignore_message: None,
+                source_file,
+                start_line,
+                start_col: 0,
+                end_line: 0,
+                end_col: 0,
+                compile_fail: false,
+                no_run,
+                should_panic: if should_panic {
+                    options::ShouldPanic::Yes
+                } else {
+                    options::ShouldPanic::No
+                },
+                test_type: TestType::DocTest,
+            },
+            testfn,
+        }
+    }
 }

@@ -1,5 +1,4 @@
-//@run-rustfix
-//@aux-build:proc_macros.rs:proc-macro
+//@aux-build:proc_macros.rs
 
 #![warn(clippy::default_numeric_fallback)]
 #![allow(
@@ -74,8 +73,6 @@ mod nested_local {
 
 mod function_def {
     fn ret_f64() -> f64 {
-        // Even though the output type is specified,
-        // this unsuffixed literal is linted to reduce heuristics and keep codebase simple.
         1.
     }
 

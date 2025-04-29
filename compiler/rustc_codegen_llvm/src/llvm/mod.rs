@@ -1,5 +1,15 @@
 #![allow(non_snake_case)]
 
+use std::cell::RefCell;
+use std::ffi::{CStr, CString};
+use std::str::FromStr;
+use std::string::FromUtf8Error;
+
+use libc::c_uint;
+use rustc_data_structures::small_c_str::SmallCStr;
+use rustc_llvm::RustString;
+use rustc_target::abi::{Align, Size, WrappingRange};
+
 pub use self::AtomicRmwBinOp::*;
 pub use self::CallConv::*;
 pub use self::CodeGenOptSize::*;
@@ -7,14 +17,6 @@ pub use self::IntPredicate::*;
 pub use self::Linkage::*;
 pub use self::MetadataType::*;
 pub use self::RealPredicate::*;
-
-use libc::c_uint;
-use rustc_data_structures::small_c_str::SmallCStr;
-use rustc_llvm::RustString;
-use std::cell::RefCell;
-use std::ffi::{CStr, CString};
-use std::str::FromStr;
-use std::string::FromUtf8Error;
 
 pub mod archive_ro;
 pub mod diagnostic;
@@ -103,6 +105,21 @@ pub fn CreateAllocKindAttr(llcx: &Context, kind_arg: AllocKindFlags) -> &Attribu
     unsafe { LLVMRustCreateAllocKindAttr(llcx, kind_arg.bits()) }
 }
 
+pub fn CreateRangeAttr(llcx: &Context, size: Size, range: WrappingRange) -> &Attribute {
+    let lower = range.start;
+    let upper = range.end.wrapping_add(1);
+    let lower_words = [lower as u64, (lower >> 64) as u64];
+    let upper_words = [upper as u64, (upper >> 64) as u64];
+    unsafe {
+        LLVMRustCreateRangeAttribute(
+            llcx,
+            size.bits().try_into().unwrap(),
+            lower_words.as_ptr(),
+            upper_words.as_ptr(),
+        )
+    }
+}
+
 #[derive(Copy, Clone)]
 pub enum AttributePlace {
     ReturnValue,
@@ -161,10 +178,10 @@ pub fn SetFunctionCallConv(fn_: &Value, cc: CallConv) {
 // function.
 // For more details on COMDAT sections see e.g., https://www.airs.com/blog/archives/52
 pub fn SetUniqueComdat(llmod: &Module, val: &Value) {
-    unsafe {
-        let name = get_value_name(val);
-        LLVMRustSetComdat(llmod, val, name.as_ptr().cast(), name.len());
-    }
+    let name_buf = get_value_name(val).to_vec();
+    let name =
+        CString::from_vec_with_nul(name_buf).or_else(|buf| CString::new(buf.into_bytes())).unwrap();
+    set_comdat(llmod, val, &name);
 }
 
 pub fn SetUnnamedAddress(global: &Value, unnamed: UnnamedAddr) {
@@ -193,15 +210,13 @@ impl MemoryEffects {
     }
 }
 
-pub fn set_section(llglobal: &Value, section_name: &str) {
-    let section_name_cstr = CString::new(section_name).expect("unexpected CString error");
+pub fn set_section(llglobal: &Value, section_name: &CStr) {
     unsafe {
-        LLVMSetSection(llglobal, section_name_cstr.as_ptr());
+        LLVMSetSection(llglobal, section_name.as_ptr());
     }
 }
 
-pub fn add_global<'a>(llmod: &'a Module, ty: &'a Type, name: &str) -> &'a Value {
-    let name_cstr = CString::new(name).expect("unexpected CString error");
+pub fn add_global<'a>(llmod: &'a Module, ty: &'a Type, name_cstr: &CStr) -> &'a Value {
     unsafe { LLVMAddGlobal(llmod, ty, name_cstr.as_ptr()) }
 }
 
@@ -229,15 +244,20 @@ pub fn set_visibility(llglobal: &Value, visibility: Visibility) {
     }
 }
 
-pub fn set_alignment(llglobal: &Value, bytes: usize) {
+pub fn set_alignment(llglobal: &Value, align: Align) {
     unsafe {
-        ffi::LLVMSetAlignment(llglobal, bytes as c_uint);
+        ffi::LLVMSetAlignment(llglobal, align.bytes() as c_uint);
     }
 }
 
-pub fn set_comdat(llmod: &Module, llglobal: &Value, name: &str) {
+/// Get the `name`d comdat from `llmod` and assign it to `llglobal`.
+///
+/// Inserts the comdat into `llmod` if it does not exist.
+/// It is an error to call this if the target does not support comdat.
+pub fn set_comdat(llmod: &Module, llglobal: &Value, name: &CStr) {
     unsafe {
-        LLVMRustSetComdat(llmod, llglobal, name.as_ptr().cast(), name.len());
+        let comdat = LLVMGetOrInsertComdat(llmod, name.as_ptr());
+        LLVMSetComdat(llglobal, comdat);
     }
 }
 

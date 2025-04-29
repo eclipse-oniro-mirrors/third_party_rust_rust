@@ -1,10 +1,7 @@
-// edition:2021
-// check-pass
-// [next] compile-flags: -Zlower-impl-trait-in-trait-to-assoc-ty
-// revisions: current next
+//@ edition:2021
+//@ check-pass
 
-#![feature(async_fn_in_trait, return_type_notation)]
-//~^ WARN the feature `return_type_notation` is incomplete
+#![feature(return_type_notation)]
 
 trait Super<'a> {
     async fn test();
@@ -18,7 +15,7 @@ impl Foo for () {}
 
 fn test<T>()
 where
-    T: Foo<test(): Send>,
+    T: Foo<test(..): Send>,
 {
 }
 

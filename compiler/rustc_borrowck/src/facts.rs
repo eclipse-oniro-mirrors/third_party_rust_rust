@@ -1,23 +1,46 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
-use crate::location::{LocationIndex, LocationTable};
-use crate::BorrowIndex;
-use polonius_engine::AllFacts as PoloniusFacts;
-use polonius_engine::Atom;
-use rustc_middle::mir::Local;
-use rustc_middle::ty::{RegionVid, TyCtxt};
-use rustc_mir_dataflow::move_paths::MovePathIndex;
 use std::error::Error;
 use std::fmt::Debug;
 use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::Path;
+
+use polonius_engine::{AllFacts as PoloniusFacts, Atom};
+use rustc_macros::extension;
+use rustc_middle::mir::Local;
+use rustc_middle::ty::{RegionVid, TyCtxt};
+use rustc_mir_dataflow::move_paths::MovePathIndex;
+
+use crate::BorrowIndex;
+use crate::location::{LocationIndex, LocationTable};
 
 #[derive(Copy, Clone, Debug)]
 pub struct RustcFacts;
 
+rustc_index::newtype_index! {
+    /// A (kinda) newtype of `RegionVid` so we can implement `Atom` on it.
+    #[orderable]
+    #[debug_format = "'?{}"]
+    pub struct PoloniusRegionVid {}
+}
+
+impl polonius_engine::Atom for PoloniusRegionVid {
+    fn index(self) -> usize {
+        self.as_usize()
+    }
+}
+impl From<RegionVid> for PoloniusRegionVid {
+    fn from(value: RegionVid) -> Self {
+        Self::from_usize(value.as_usize())
+    }
+}
+impl From<PoloniusRegionVid> for RegionVid {
+    fn from(value: PoloniusRegionVid) -> Self {
+        Self::from_usize(value.as_usize())
+    }
+}
+
 impl polonius_engine::FactTypes for RustcFacts {
-    type Origin = RegionVid;
+    type Origin = PoloniusRegionVid;
     type Loan = BorrowIndex;
     type Point = LocationIndex;
     type Variable = Local;
@@ -26,22 +49,13 @@ impl polonius_engine::FactTypes for RustcFacts {
 
 pub type AllFacts = PoloniusFacts<RustcFacts>;
 
-pub(crate) trait AllFactsExt {
+#[extension(pub(crate) trait AllFactsExt)]
+impl AllFacts {
     /// Returns `true` if there is a need to gather `AllFacts` given the
     /// current `-Z` flags.
-    fn enabled(tcx: TyCtxt<'_>) -> bool;
-
-    fn write_to_dir(
-        &self,
-        dir: impl AsRef<Path>,
-        location_table: &LocationTable,
-    ) -> Result<(), Box<dyn Error>>;
-}
-
-impl AllFactsExt for AllFacts {
-    /// Return
     fn enabled(tcx: TyCtxt<'_>) -> bool {
-        tcx.sess.opts.unstable_opts.nll_facts || tcx.sess.opts.unstable_opts.polonius
+        tcx.sess.opts.unstable_opts.nll_facts
+            || tcx.sess.opts.unstable_opts.polonius.is_legacy_enabled()
     }
 
     fn write_to_dir(
@@ -113,7 +127,7 @@ impl<'w> FactWriter<'w> {
         T: FactRow,
     {
         let file = &self.dir.join(file_name);
-        let mut file = BufWriter::new(File::create(file)?);
+        let mut file = File::create_buffered(file)?;
         for row in rows {
             row.write(&mut file, self.location_table)?;
         }
@@ -129,7 +143,7 @@ trait FactRow {
     ) -> Result<(), Box<dyn Error>>;
 }
 
-impl FactRow for RegionVid {
+impl FactRow for PoloniusRegionVid {
     fn write(
         &self,
         out: &mut dyn Write,
@@ -200,9 +214,33 @@ trait FactCell {
     fn to_string(&self, location_table: &LocationTable) -> String;
 }
 
-impl<A: Debug> FactCell for A {
-    default fn to_string(&self, _location_table: &LocationTable) -> String {
-        format!("{:?}", self)
+impl FactCell for BorrowIndex {
+    fn to_string(&self, _location_table: &LocationTable) -> String {
+        format!("{self:?}")
+    }
+}
+
+impl FactCell for Local {
+    fn to_string(&self, _location_table: &LocationTable) -> String {
+        format!("{self:?}")
+    }
+}
+
+impl FactCell for MovePathIndex {
+    fn to_string(&self, _location_table: &LocationTable) -> String {
+        format!("{self:?}")
+    }
+}
+
+impl FactCell for PoloniusRegionVid {
+    fn to_string(&self, _location_table: &LocationTable) -> String {
+        format!("{self:?}")
+    }
+}
+
+impl FactCell for RegionVid {
+    fn to_string(&self, _location_table: &LocationTable) -> String {
+        format!("{self:?}")
     }
 }
 

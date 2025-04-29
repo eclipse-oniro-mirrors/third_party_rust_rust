@@ -13,6 +13,7 @@ use crate::{
 };
 use hir_expand::name::Name;
 use intern::Interned;
+use span::Edition;
 use syntax::ast;
 
 pub use hir_expand::mod_path::{path, ModPath, PathKind};
@@ -25,11 +26,21 @@ pub enum ImportAlias {
     Alias(Name),
 }
 
-impl Display for ImportAlias {
+impl ImportAlias {
+    pub fn display(&self, edition: Edition) -> impl Display + '_ {
+        ImportAliasDisplay { value: self, edition }
+    }
+}
+
+struct ImportAliasDisplay<'a> {
+    value: &'a ImportAlias,
+    edition: Edition,
+}
+impl Display for ImportAliasDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self.value {
             ImportAlias::Underscore => f.write_str("_"),
-            ImportAlias::Alias(name) => f.write_str(&name.to_smol_str()),
+            ImportAlias::Alias(name) => Display::fmt(&name.display_no_db(self.edition), f),
         }
     }
 }
@@ -45,9 +56,9 @@ pub enum Path {
         /// Invariant: the same len as `self.mod_path.segments` or `None` if all segments are `None`.
         generic_args: Option<Box<[Option<Interned<GenericArgs>>]>>,
     },
-    /// A link to a lang item. It is used in desugaring of things like `x?`. We can show these
+    /// A link to a lang item. It is used in desugaring of things like `it?`. We can show these
     /// links via a normal path since they might be private and not accessible in the usage place.
-    LangItem(LangItemTarget),
+    LangItem(LangItemTarget, Option<Name>),
 }
 
 /// Generic arguments to a path segment (e.g. the `i32` in `Option<i32>`). This
@@ -96,8 +107,8 @@ pub enum GenericArg {
 impl Path {
     /// Converts an `ast::Path` to `Path`. Works with use trees.
     /// It correctly handles `$crate` based path from macro call.
-    pub fn from_src(path: ast::Path, ctx: &LowerCtx<'_>) -> Option<Path> {
-        lower::lower_path(path, ctx)
+    pub fn from_src(ctx: &LowerCtx<'_>, path: ast::Path) -> Option<Path> {
+        lower::lower_path(ctx, path)
     }
 
     /// Converts a known mod path to `Path`.
@@ -122,36 +133,40 @@ impl Path {
     pub fn kind(&self) -> &PathKind {
         match self {
             Path::Normal { mod_path, .. } => &mod_path.kind,
-            Path::LangItem(_) => &PathKind::Abs,
+            Path::LangItem(..) => &PathKind::Abs,
         }
     }
 
     pub fn type_anchor(&self) -> Option<&TypeRef> {
         match self {
             Path::Normal { type_anchor, .. } => type_anchor.as_deref(),
-            Path::LangItem(_) => None,
+            Path::LangItem(..) => None,
         }
     }
 
     pub fn segments(&self) -> PathSegments<'_> {
-        let Path::Normal { mod_path, generic_args, .. } = self else {
-            return PathSegments {
-                segments: &[],
+        match self {
+            Path::Normal { mod_path, generic_args, .. } => {
+                let s = PathSegments {
+                    segments: mod_path.segments(),
+                    generic_args: generic_args.as_deref(),
+                };
+                if let Some(generic_args) = s.generic_args {
+                    assert_eq!(s.segments.len(), generic_args.len());
+                }
+                s
+            }
+            Path::LangItem(_, seg) => PathSegments {
+                segments: seg.as_ref().map_or(&[], |seg| std::slice::from_ref(seg)),
                 generic_args: None,
-            };
-        };
-        let s =
-            PathSegments { segments: mod_path.segments(), generic_args: generic_args.as_deref() };
-        if let Some(generic_args) = s.generic_args {
-            assert_eq!(s.segments.len(), generic_args.len());
+            },
         }
-        s
     }
 
     pub fn mod_path(&self) -> Option<&ModPath> {
         match self {
-            Path::Normal { mod_path, .. } => Some(&mod_path),
-            Path::LangItem(_) => None,
+            Path::Normal { mod_path, .. } => Some(mod_path),
+            Path::LangItem(..) => None,
         }
     }
 
@@ -215,13 +230,13 @@ impl<'a> PathSegments<'a> {
     }
     pub fn skip(&self, len: usize) -> PathSegments<'a> {
         PathSegments {
-            segments: &self.segments.get(len..).unwrap_or(&[]),
+            segments: self.segments.get(len..).unwrap_or(&[]),
             generic_args: self.generic_args.and_then(|it| it.get(len..)),
         }
     }
     pub fn take(&self, len: usize) -> PathSegments<'a> {
         PathSegments {
-            segments: &self.segments.get(..len).unwrap_or(&self.segments),
+            segments: self.segments.get(..len).unwrap_or(self.segments),
             generic_args: self.generic_args.map(|it| it.get(..len).unwrap_or(it)),
         }
     }

@@ -6,13 +6,16 @@ FROM centos:7
 
 WORKDIR /build
 
+# CentOS 7 EOL is June 30, 2024, but the repos remain in the vault.
+RUN sed -i /etc/yum.repos.d/*.repo -e 's!^mirrorlist!#mirrorlist!' \
+  -e 's!^#baseurl=http://mirror.centos.org/!baseurl=https://vault.centos.org/!'
+RUN sed -i 's/enabled=1/enabled=0/' /etc/yum/pluginconf.d/fastestmirror.conf
+
 RUN yum upgrade -y && \
-    yum install -y epel-release && \
     yum install -y \
       automake \
       bzip2 \
       file \
-      cmake3 \
       gcc \
       gcc-c++ \
       git \
@@ -26,6 +29,7 @@ RUN yum upgrade -y && \
       openssl-devel \
       patch \
       perl \
+      perl-core \
       pkgconfig \
       python3 \
       unzip \
@@ -35,7 +39,7 @@ RUN yum upgrade -y && \
       zlib-devel.x86_64 \
       && yum clean all
 
-RUN mkdir -p /rustroot/bin && ln -s /usr/bin/cmake3 /rustroot/bin/cmake
+RUN mkdir -p /rustroot/bin
 
 ENV PATH=/rustroot/bin:$PATH
 ENV LD_LIBRARY_PATH=/rustroot/lib64:/rustroot/lib32:/rustroot/lib
@@ -47,6 +51,9 @@ COPY host-x86_64/dist-x86_64-linux/shared.sh /tmp/
 # Need at least GCC 5.1 to compile LLVM nowadays
 COPY host-x86_64/dist-x86_64-linux/build-gcc.sh /tmp/
 RUN ./build-gcc.sh && yum remove -y gcc gcc-c++
+
+COPY scripts/cmake.sh /tmp/
+RUN ./cmake.sh
 
 # Now build LLVM+Clang, afterwards configuring further compilations to use the
 # clang/clang++ compilers.

@@ -5,8 +5,8 @@
 //     39
 //     10
 
-#![allow(unused_attributes)]
-#![feature(auto_traits, lang_items, no_core, start, intrinsics, arbitrary_self_types)]
+#![allow(internal_features, unused_attributes)]
+#![feature(auto_traits, lang_items, no_core, start, intrinsics, arbitrary_self_types, rustc_attrs)]
 
 #![no_std]
 #![no_core]
@@ -205,6 +205,24 @@ impl Mul for isize {
     fn mul(self, rhs: Self) -> Self::Output {
         self * rhs
     }
+}
+
+#[track_caller]
+#[lang = "panic_const_add_overflow"]
+pub fn panic_const_add_overflow() -> ! {
+    panic("attempt to add with overflow");
+}
+
+#[track_caller]
+#[lang = "panic_const_sub_overflow"]
+pub fn panic_const_sub_overflow() -> ! {
+    panic("attempt to subtract with overflow");
+}
+
+#[track_caller]
+#[lang = "panic_const_mul_overflow"]
+pub fn panic_const_mul_overflow() -> ! {
+    panic("attempt to multiply with overflow");
 }
 
 /*

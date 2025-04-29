@@ -2,8 +2,12 @@
 #![allow(
     clippy::disallowed_names,
     clippy::diverging_sub_expression,
-    clippy::uninlined_format_args
+    clippy::uninlined_format_args,
+    clippy::match_single_binding,
+    clippy::match_like_matches_macro
 )]
+
+//@no-rustfix: need to change the suggestion to a multipart suggestion
 
 fn bar<T>(_: T) {}
 fn foo() -> bool {
@@ -13,7 +17,6 @@ fn foo() -> bool {
 fn match_same_arms() {
     let _ = match 42 {
         42 => {
-            //~^ ERROR: this match arm has an identical body to the `_` wildcard arm
             foo();
             let mut a = 42 + [23].len() as i32;
             if true {
@@ -32,6 +35,7 @@ fn match_same_arms() {
             a
         },
     };
+    //~^^^^^^^^^^^^^^^^^^^ ERROR: this match arm has an identical body to the `_` wildcard arm
 
     let _ = match 42 {
         42 => foo(),
@@ -66,6 +70,20 @@ fn match_same_arms() {
         (None, Some(a)) => bar(a), //~ ERROR: this match arm has an identical body to another arm
         _ => (),
     }
+
+    // No warning because guards are different
+    let _ = match Some(42) {
+        Some(a) if a == 42 => a,
+        Some(a) if a == 24 => a,
+        Some(_) => 24,
+        None => 0,
+    };
+
+    let _ = match (Some(42), Some(42)) {
+        (Some(a), None) if a == 42 => a,
+        (None, Some(a)) if a == 42 => a, //~ ERROR: this match arm has an identical body to another arm
+        _ => 0,
+    };
 
     match (Some(42), Some(42)) {
         (Some(a), ..) => bar(a), //~ ERROR: this match arm has an identical body to another arm
@@ -146,13 +164,13 @@ fn match_same_arms() {
             empty!(0);
         },
         1 => {
-            //~^ ERROR: this match arm has an identical body to another arm
             empty!(0);
         },
         x => {
             empty!(x);
         },
     }
+    //~^^^^^^^ ERROR: this match arm has an identical body to another arm
 
     match_expr_like_matches_macro_priority();
 }
@@ -246,4 +264,22 @@ fn main() {
         1 => cfg!(not_enable),
         _ => false,
     };
+}
+
+// issue #8919, fixed on https://github.com/rust-lang/rust/pull/97312
+mod with_lifetime {
+    enum MaybeStaticStr<'a> {
+        Static(&'static str),
+        Borrowed(&'a str),
+    }
+
+    impl<'a> MaybeStaticStr<'a> {
+        fn get(&self) -> &'a str {
+            match *self {
+                MaybeStaticStr::Static(s) => s,
+                MaybeStaticStr::Borrowed(s) => s,
+                //~^ ERROR: this match arm has an identical body to another arm
+            }
+        }
+    }
 }

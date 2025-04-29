@@ -1,22 +1,29 @@
 //! Various batch processing tasks, intended primarily for debugging.
 
-pub mod flags;
-pub mod load_cargo;
-mod parse;
-mod symbols;
-mod highlight;
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 mod analysis_stats;
 mod diagnostics;
-mod ssr;
+pub mod flags;
+mod highlight;
 mod lsif;
+mod parse;
+mod run_tests;
+mod rustc_tests;
 mod scip;
+mod ssr;
+mod symbols;
+mod unresolved_references;
 
 mod progress_report;
 
 use std::io::Read;
 
 use anyhow::Result;
-use ide::AnalysisHost;
+use hir::{Module, Name};
+use hir_ty::db::HirDatabase;
+use ide::{AnalysisHost, Edition};
+use itertools::Itertools;
 use vfs::Vfs;
 
 #[derive(Clone, Copy)]
@@ -36,7 +43,7 @@ impl Verbosity {
     }
 }
 
-fn read_stdin() -> Result<String> {
+fn read_stdin() -> anyhow::Result<String> {
     let mut buff = String::new();
     std::io::stdin().read_to_string(&mut buff)?;
     Ok(buff)
@@ -70,4 +77,15 @@ fn print_memory_usage(mut host: AnalysisHost, vfs: Vfs) {
     eprintln!("{unaccounted:>8}        Unaccounted");
 
     eprintln!("{remaining:>8}        Remaining");
+}
+
+fn full_name_of_item(db: &dyn HirDatabase, module: Module, name: Name) -> String {
+    module
+        .path_to_root(db)
+        .into_iter()
+        .rev()
+        .filter_map(|it| it.name(db))
+        .chain(Some(name))
+        .map(|it| it.display(db.upcast(), Edition::LATEST).to_string())
+        .join("::")
 }

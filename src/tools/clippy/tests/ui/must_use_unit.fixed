@@ -1,5 +1,4 @@
-//@run-rustfix
-//@aux-build:proc_macros.rs:proc-macro
+//@aux-build:proc_macros.rs
 
 #![warn(clippy::must_use_unit)]
 #![allow(clippy::unused_unit)]
@@ -7,12 +6,9 @@
 extern crate proc_macros;
 use proc_macros::external;
 
-
 pub fn must_use_default() {}
 
-
 pub fn must_use_unit() -> () {}
-
 
 pub fn must_use_with_note() {}
 

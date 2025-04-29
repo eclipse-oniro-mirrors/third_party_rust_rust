@@ -7,17 +7,17 @@
 //! errors. We still look for those primitives in the MIR const-checker to ensure nothing slips
 //! through, but errors for structured control flow in a `const` should be emitted here.
 
-use rustc_attr as attr;
-use rustc_hir as hir;
-use rustc_hir::def_id::LocalDefId;
+use rustc_hir::def_id::{LocalDefId, LocalModDefId};
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::query::Providers;
+use rustc_middle::span_bug;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::parse::feature_err;
-use rustc_span::{sym, Span, Symbol};
+use rustc_span::{Span, Symbol, sym};
+use {rustc_attr as attr, rustc_hir as hir};
 
-use crate::errors::{ExprNotAllowedInContext, SkippingConstChecks};
+use crate::errors::SkippingConstChecks;
 
 /// An expression that is not *always* legal in a const context.
 #[derive(Clone, Copy)]
@@ -45,17 +45,17 @@ impl NonConstExpr {
 
             Self::Loop(ForLoop) | Self::Match(ForLoopDesugar) => &[sym::const_for],
 
-            Self::Match(TryDesugar) => &[sym::const_try],
+            Self::Match(TryDesugar(_)) => &[sym::const_try],
 
             // All other expressions are allowed.
-            Self::Loop(Loop | While) | Self::Match(Normal | FormatArgs) => &[],
+            Self::Loop(Loop | While) | Self::Match(Normal | Postfix | FormatArgs) => &[],
         };
 
         Some(gates)
     }
 }
 
-fn check_mod_const_bodies(tcx: TyCtxt<'_>, module_def_id: LocalDefId) {
+fn check_mod_const_bodies(tcx: TyCtxt<'_>, module_def_id: LocalModDefId) {
     let mut vis = CheckConstVisitor::new(tcx);
     tcx.hir().visit_item_likes_in_module(module_def_id, &mut vis);
 }
@@ -77,6 +77,7 @@ impl<'tcx> CheckConstVisitor<'tcx> {
     }
 
     /// Emits an error when an unsupported expression is found in a const context.
+    #[allow(rustc::untranslatable_diagnostic)] // FIXME: make this translatable
     fn const_check_violated(&self, expr: NonConstExpr, span: Span) {
         let Self { tcx, def_id, const_kind } = *self;
 
@@ -110,8 +111,8 @@ impl<'tcx> CheckConstVisitor<'tcx> {
 
             // However, we cannot allow stable `const fn`s to use unstable features without an explicit
             // opt-in via `rustc_allow_const_fn_unstable`.
-            let attrs = tcx.hir().attrs(tcx.hir().local_def_id_to_hir_id(def_id));
-            attr::rustc_allow_const_fn_unstable(&tcx.sess, attrs).any(|name| name == feature_gate)
+            let attrs = tcx.hir().attrs(tcx.local_def_id_to_hir_id(def_id));
+            attr::rustc_allow_const_fn_unstable(tcx.sess, attrs).any(|name| name == feature_gate)
         };
 
         match required_gates {
@@ -122,7 +123,7 @@ impl<'tcx> CheckConstVisitor<'tcx> {
             // corresponding feature gate. This encourages nightly users to use feature gates when
             // possible.
             None if tcx.sess.opts.unstable_opts.unleash_the_miri_inside_of_you => {
-                tcx.sess.emit_warning(SkippingConstChecks { span });
+                tcx.dcx().emit_warn(SkippingConstChecks { span });
                 return;
             }
 
@@ -138,32 +139,27 @@ impl<'tcx> CheckConstVisitor<'tcx> {
 
         match missing_gates.as_slice() {
             [] => {
-                tcx.sess.emit_err(ExprNotAllowedInContext {
+                span_bug!(
                     span,
-                    expr: expr.name(),
-                    context: const_kind.keyword_name(),
-                });
+                    "we should not have reached this point, since `.await` is denied earlier"
+                );
             }
 
             [missing_primary, ref missing_secondary @ ..] => {
                 let msg =
                     format!("{} is not allowed in a `{}`", expr.name(), const_kind.keyword_name());
-                let mut err = feature_err(&tcx.sess.parse_sess, *missing_primary, span, msg);
+                let mut err = feature_err(&tcx.sess, *missing_primary, span, msg);
 
                 // If multiple feature gates would be required to enable this expression, include
                 // them as help messages. Don't emit a separate error for each missing feature gate.
                 //
                 // FIXME(ecstaticmorse): Maybe this could be incorporated into `feature_err`? This
                 // is a pretty narrow case, however.
-                if tcx.sess.is_nightly_build() {
-                    for gate in missing_secondary {
-                        let note = format!(
-                            "add `#![feature({})]` to the crate attributes to enable",
-                            gate,
-                        );
-                        err.help(note);
-                    }
-                }
+                tcx.disabled_nightly_features(
+                    &mut err,
+                    def_id.map(|id| tcx.local_def_id_to_hir_id(id)),
+                    missing_secondary.into_iter().map(|gate| (String::new(), *gate)),
+                );
 
                 err.emit();
             }
@@ -195,16 +191,16 @@ impl<'tcx> Visitor<'tcx> for CheckConstVisitor<'tcx> {
     }
 
     fn visit_anon_const(&mut self, anon: &'tcx hir::AnonConst) {
-        let kind = Some(hir::ConstContext::Const);
+        let kind = Some(hir::ConstContext::Const { inline: false });
         self.recurse_into(kind, None, |this| intravisit::walk_anon_const(this, anon));
     }
 
     fn visit_inline_const(&mut self, block: &'tcx hir::ConstBlock) {
-        let kind = Some(hir::ConstContext::Const);
+        let kind = Some(hir::ConstContext::Const { inline: true });
         self.recurse_into(kind, None, |this| intravisit::walk_inline_const(this, block));
     }
 
-    fn visit_body(&mut self, body: &'tcx hir::Body<'tcx>) {
+    fn visit_body(&mut self, body: &hir::Body<'tcx>) {
         let owner = self.tcx.hir().body_owner_def_id(body.id());
         let kind = self.tcx.hir().body_const_context(owner);
         self.recurse_into(kind, Some(owner), |this| intravisit::walk_body(this, body));

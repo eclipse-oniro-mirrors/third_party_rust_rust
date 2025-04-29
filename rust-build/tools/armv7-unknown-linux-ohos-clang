@@ -1,3 +1,0 @@
-#!/bin/bash
-
-exec armv7-unknown-linux-ohos-clang -Imusl -fstack-protector-all "$@"

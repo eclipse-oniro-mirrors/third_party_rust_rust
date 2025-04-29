@@ -1,4 +1,5 @@
-use clippy_utils::{diagnostics::span_lint_and_then, is_res_lang_ctor, last_path_segment, path_res, MaybePath};
+use clippy_utils::diagnostics::span_lint_and_then;
+use clippy_utils::{MaybePath, is_res_lang_ctor, last_path_segment, path_res};
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_lint::LateContext;
@@ -23,7 +24,6 @@ fn get_ty_from_args<'a>(args: Option<&'a [hir::GenericArg<'a>]>, index: usize) -
     }
 }
 
-#[expect(clippy::too_many_lines)]
 pub(super) fn check(
     cx: &LateContext<'_>,
     expr: &hir::Expr<'_>,
@@ -32,6 +32,11 @@ pub(super) fn check(
     args: &[hir::Expr<'_>],
 ) {
     let init = clippy_utils::expr_or_init(cx, recv);
+    if init.span.from_expansion() {
+        // don't lint if the receiver or binding initializer comes from a macro
+        // (e.g. `let x = option_env!(..); x.unwrap()`)
+        return;
+    }
 
     let (constructor, call_args, ty) = if let hir::ExprKind::Call(call, call_args) = init.kind {
         let Some(qpath) = call.qpath_opt() else { return };
@@ -58,13 +63,29 @@ pub(super) fn check(
     let help_message = format!("used `{method}()` on `{constructor}` value");
     let suggestion_message = format!("remove the `{constructor}` and `{method}()`");
 
-    span_lint_and_then(cx, UNNECESSARY_LITERAL_UNWRAP, expr.span, &help_message, |diag| {
+    span_lint_and_then(cx, UNNECESSARY_LITERAL_UNWRAP, expr.span, help_message, |diag| {
         let suggestions = match (constructor, method, ty) {
             ("None", "unwrap", _) => Some(vec![(expr.span, "panic!()".to_string())]),
             ("None", "expect", _) => Some(vec![
                 (expr.span.with_hi(args[0].span.lo()), "panic!(".to_string()),
                 (expr.span.with_lo(args[0].span.hi()), ")".to_string()),
             ]),
+            ("Some" | "Ok", "unwrap_unchecked", _) | ("Err", "unwrap_err_unchecked", _) => {
+                let mut suggs = vec![
+                    (recv.span.with_hi(call_args[0].span.lo()), String::new()),
+                    (expr.span.with_lo(call_args[0].span.hi()), String::new()),
+                ];
+                // try to also remove the unsafe block if present
+                if let hir::Node::Block(block) = cx.tcx.parent_hir_node(expr.hir_id)
+                    && let hir::BlockCheckMode::UnsafeBlock(hir::UnsafeSource::UserProvided) = block.rules
+                {
+                    suggs.extend([
+                        (block.span.shrink_to_lo().to(expr.span.shrink_to_lo()), String::new()),
+                        (expr.span.shrink_to_hi().to(block.span.shrink_to_hi()), String::new()),
+                    ]);
+                }
+                Some(suggs)
+            },
             ("None", "unwrap_or_default", _) => {
                 let ty = cx.typeck_results().expr_ty(expr);
                 let default_ty_string = if let ty::Adt(def, ..) = ty.kind() {
@@ -79,15 +100,11 @@ pub(super) fn check(
                 (expr.span.with_lo(args[0].span.hi()), String::new()),
             ]),
             ("None", "unwrap_or_else", _) => match args[0].kind {
-                hir::ExprKind::Closure(hir::Closure {
-                    fn_decl:
-                        hir::FnDecl {
-                            output: hir::FnRetTy::DefaultReturn(span) | hir::FnRetTy::Return(hir::Ty { span, .. }),
-                            ..
-                        },
-                    ..
-                }) => Some(vec![
-                    (expr.span.with_hi(span.hi()), String::new()),
+                hir::ExprKind::Closure(hir::Closure { body, .. }) => Some(vec![
+                    (
+                        expr.span.with_hi(cx.tcx.hir().body(*body).value.span.lo()),
+                        String::new(),
+                    ),
                     (expr.span.with_lo(args[0].span.hi()), String::new()),
                 ]),
                 _ => None,

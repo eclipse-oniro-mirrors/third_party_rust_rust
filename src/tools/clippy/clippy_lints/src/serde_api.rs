@@ -2,14 +2,14 @@ use clippy_utils::diagnostics::span_lint;
 use clippy_utils::{get_trait_def_id, paths};
 use rustc_hir::{Impl, Item, ItemKind};
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_lint_pass;
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for mis-uses of the serde API.
+    /// Checks for misuses of the serde API.
     ///
     /// ### Why is this bad?
-    /// Serde is very finnicky about how its API should be
+    /// Serde is very finicky about how its API should be
     /// used, but the type system can't be used to enforce it (yet?).
     ///
     /// ### Example
@@ -32,7 +32,7 @@ impl<'tcx> LateLintPass<'tcx> for SerdeApi {
         }) = item.kind
         {
             let did = trait_ref.path.res.def_id();
-            if let Some(visit_did) = get_trait_def_id(cx, &paths::SERDE_DE_VISITOR) {
+            if let Some(visit_did) = get_trait_def_id(cx.tcx, &paths::SERDE_DE_VISITOR) {
                 if did == visit_did {
                     let mut seen_str = None;
                     let mut seen_string = None;

@@ -16,20 +16,20 @@ use crate::{
 //
 // This is the same as `Go to Definition` with the following exceptions:
 // - outline modules will navigate to the `mod name;` item declaration
-// - trait assoc items will navigate to the assoc item of the trait declaration opposed to the trait impl
+// - trait assoc items will navigate to the assoc item of the trait declaration as opposed to the trait impl
 // - fields in patterns will navigate to the field declaration of the struct, union or variant
 pub(crate) fn goto_declaration(
     db: &RootDatabase,
-    position: FilePosition,
+    position @ FilePosition { file_id, offset }: FilePosition,
 ) -> Option<RangeInfo<Vec<NavigationTarget>>> {
     let sema = Semantics::new(db);
-    let file = sema.parse(position.file_id).syntax().clone();
+    let file = sema.parse_guess_edition(file_id).syntax().clone();
     let original_token = file
-        .token_at_offset(position.offset)
+        .token_at_offset(offset)
         .find(|it| matches!(it.kind(), IDENT | T![self] | T![super] | T![crate] | T![Self]))?;
     let range = original_token.text_range();
     let info: Vec<NavigationTarget> = sema
-        .descend_into_macros(original_token)
+        .descend_into_macros_no_opaque(original_token)
         .iter()
         .filter_map(|token| {
             let parent = token.parent()?;
@@ -37,11 +37,15 @@ pub(crate) fn goto_declaration(
                 match parent {
                     ast::NameRef(name_ref) => match NameRefClass::classify(&sema, &name_ref)? {
                         NameRefClass::Definition(it) => Some(it),
-                        NameRefClass::FieldShorthand { field_ref, .. } => return field_ref.try_to_nav(db),
+                        NameRefClass::FieldShorthand { field_ref, .. } =>
+                            return field_ref.try_to_nav(db),
+                        NameRefClass::ExternCrateShorthand { decl, .. } =>
+                            return decl.try_to_nav(db),
                     },
                     ast::Name(name) => match NameClass::classify(&sema, &name)? {
                         NameClass::Definition(it) | NameClass::ConstReference(it) => Some(it),
-                        NameClass::PatFieldShorthand { field_ref, .. } => return field_ref.try_to_nav(db),
+                        NameClass::PatFieldShorthand { field_ref, .. } =>
+                            return field_ref.try_to_nav(db),
                     },
                     _ => None
                 }
@@ -53,14 +57,16 @@ pub(crate) fn goto_declaration(
                 Definition::Const(c) => c.as_assoc_item(db),
                 Definition::TypeAlias(ta) => ta.as_assoc_item(db),
                 Definition::Function(f) => f.as_assoc_item(db),
+                Definition::ExternCrateDecl(it) => return it.try_to_nav(db),
                 _ => None,
             }?;
 
-            let trait_ = assoc.containing_trait_impl(db)?;
+            let trait_ = assoc.implemented_trait(db)?;
             let name = Some(assoc.name(db)?);
             let item = trait_.items(db).into_iter().find(|it| it.name(db) == name)?;
             item.try_to_nav(db)
         })
+        .flatten()
         .collect();
 
     if info.is_empty() {
@@ -72,7 +78,7 @@ pub(crate) fn goto_declaration(
 
 #[cfg(test)]
 mod tests {
-    use ide_db::base_db::FileRange;
+    use ide_db::FileRange;
     use itertools::Itertools;
 
     use crate::fixture;
@@ -210,5 +216,31 @@ fn main() {
 }
 "#,
         );
+    }
+
+    #[test]
+    fn goto_decl_for_extern_crate() {
+        check(
+            r#"
+//- /main.rs crate:main deps:std
+extern crate std$0;
+         /// ^^^
+//- /std/lib.rs crate:std
+// empty
+"#,
+        )
+    }
+
+    #[test]
+    fn goto_decl_for_renamed_extern_crate() {
+        check(
+            r#"
+//- /main.rs crate:main deps:std
+extern crate std as abc$0;
+                /// ^^^
+//- /std/lib.rs crate:std
+// empty
+"#,
+        )
     }
 }

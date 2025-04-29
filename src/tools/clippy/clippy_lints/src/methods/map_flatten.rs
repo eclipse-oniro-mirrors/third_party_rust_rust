@@ -6,7 +6,8 @@ use rustc_errors::Applicability;
 use rustc_hir::Expr;
 use rustc_lint::LateContext;
 use rustc_middle::ty;
-use rustc_span::{symbol::sym, Span};
+use rustc_span::Span;
+use rustc_span::symbol::sym;
 
 use super::MAP_FLATTEN;
 
@@ -20,8 +21,8 @@ pub(super) fn check(cx: &LateContext<'_>, expr: &Expr<'_>, recv: &Expr<'_>, map_
             cx,
             MAP_FLATTEN,
             expr.span.with_lo(map_span.lo()),
-            &format!("called `map(..).flatten()` on `{caller_ty_name}`"),
-            &format!("try replacing `map` with `{method_to_use}` and remove the `.flatten()`"),
+            format!("called `map(..).flatten()` on `{caller_ty_name}`"),
+            format!("try replacing `map` with `{method_to_use}` and remove the `.flatten()`"),
             format!("{method_to_use}({closure_snippet})"),
             applicability,
         );
@@ -57,12 +58,12 @@ fn try_get_caller_ty_name_and_method_name(
 fn is_map_to_option(cx: &LateContext<'_>, map_arg: &Expr<'_>) -> bool {
     let map_closure_ty = cx.typeck_results().expr_ty(map_arg);
     match map_closure_ty.kind() {
-        ty::Closure(_, _) | ty::FnDef(_, _) | ty::FnPtr(_) => {
+        ty::Closure(_, _) | ty::FnDef(_, _) | ty::FnPtr(..) => {
             let map_closure_sig = match map_closure_ty.kind() {
-                ty::Closure(_, substs) => substs.as_closure().sig(),
+                ty::Closure(_, args) => args.as_closure().sig(),
                 _ => map_closure_ty.fn_sig(cx.tcx),
             };
-            let map_closure_return_ty = cx.tcx.erase_late_bound_regions(map_closure_sig.output());
+            let map_closure_return_ty = cx.tcx.instantiate_bound_regions_with_erased(map_closure_sig.output());
             is_type_diagnostic_item(cx, map_closure_return_ty, sym::Option)
         },
         _ => false,

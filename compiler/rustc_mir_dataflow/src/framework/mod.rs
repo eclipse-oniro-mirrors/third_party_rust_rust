@@ -1,9 +1,11 @@
 //! A framework that can express both [gen-kill] and generic dataflow problems.
 //!
-//! To use this framework, implement either the [`Analysis`] or the
-//! [`GenKillAnalysis`] trait. If your transfer function can be expressed with only gen/kill
-//! operations, prefer `GenKillAnalysis` since it will run faster while iterating to fixpoint. The
-//! `impls` module contains several examples of gen/kill dataflow analyses.
+//! To use this framework, implement the [`Analysis`] trait. There used to be a `GenKillAnalysis`
+//! alternative trait for gen-kill analyses that would pre-compute the transfer function for each
+//! block. It was intended as an optimization, but it ended up not being any faster than
+//! `Analysis`.
+//!
+//! The `impls` module contains several examples of dataflow analyses.
 //!
 //! Create an `Engine` for your analysis using the `into_engine` method on the `Analysis` trait,
 //! then call `iterate_to_fixpoint`. From there, you can use a `ResultsCursor` to inspect the
@@ -32,9 +34,9 @@
 
 use std::cmp::Ordering;
 
-use rustc_index::bit_set::{BitSet, ChunkedBitSet, HybridBitSet};
 use rustc_index::Idx;
-use rustc_middle::mir::{self, BasicBlock, Location};
+use rustc_index::bit_set::{BitSet, ChunkedBitSet, HybridBitSet};
+use rustc_middle::mir::{self, BasicBlock, CallReturnPlaces, Location, TerminatorEdges};
 use rustc_middle::ty::TyCtxt;
 
 mod cursor;
@@ -45,26 +47,21 @@ pub mod graphviz;
 pub mod lattice;
 mod visitor;
 
-pub use self::cursor::{AnalysisResults, ResultsClonedCursor, ResultsCursor, ResultsRefCursor};
+pub use self::cursor::ResultsCursor;
 pub use self::direction::{Backward, Direction, Forward};
-pub use self::engine::{Engine, EntrySets, Results, ResultsCloned};
-pub use self::lattice::{JoinSemiLattice, MeetSemiLattice};
-pub use self::visitor::{visit_results, ResultsVisitable, ResultsVisitor};
+pub use self::engine::{Engine, Results};
+pub use self::lattice::{JoinSemiLattice, MaybeReachable};
+pub use self::visitor::{ResultsVisitable, ResultsVisitor, visit_results};
 
 /// Analysis domains are all bitsets of various kinds. This trait holds
 /// operations needed by all of them.
 pub trait BitSetExt<T> {
-    fn domain_size(&self) -> usize;
     fn contains(&self, elem: T) -> bool;
     fn union(&mut self, other: &HybridBitSet<T>);
     fn subtract(&mut self, other: &HybridBitSet<T>);
 }
 
 impl<T: Idx> BitSetExt<T> for BitSet<T> {
-    fn domain_size(&self) -> usize {
-        self.domain_size()
-    }
-
     fn contains(&self, elem: T) -> bool {
         self.contains(elem)
     }
@@ -79,10 +76,6 @@ impl<T: Idx> BitSetExt<T> for BitSet<T> {
 }
 
 impl<T: Idx> BitSetExt<T> for ChunkedBitSet<T> {
-    fn domain_size(&self) -> usize {
-        self.domain_size()
-    }
-
     fn contains(&self, elem: T) -> bool {
         self.contains(elem)
     }
@@ -96,11 +89,26 @@ impl<T: Idx> BitSetExt<T> for ChunkedBitSet<T> {
     }
 }
 
-/// Defines the domain of a dataflow problem.
+/// A dataflow problem with an arbitrarily complex transfer function.
 ///
-/// This trait specifies the lattice on which this analysis operates (the domain) as well as its
-/// initial value at the entry point of each basic block.
-pub trait AnalysisDomain<'tcx> {
+/// This trait specifies the lattice on which this analysis operates (the domain), its
+/// initial value at the entry point of each basic block, and various operations.
+///
+/// # Convergence
+///
+/// When implementing this trait it's possible to choose a transfer function such that the analysis
+/// does not reach fixpoint. To guarantee convergence, your transfer functions must maintain the
+/// following invariant:
+///
+/// > If the dataflow state **before** some point in the program changes to be greater
+/// than the prior state **before** that point, the dataflow state **after** that point must
+/// also change to be greater than the prior state **after** that point.
+///
+/// This invariant guarantees that the dataflow state at a given point in the program increases
+/// monotonically until fixpoint is reached. Note that this monotonicity requirement only applies
+/// to the same point in the program at different points in time. The dataflow state at a given
+/// point in the program may or may not be greater than the state at any preceding point.
+pub trait Analysis<'tcx> {
     /// The type that holds the dataflow state at any given point in the program.
     type Domain: Clone + JoinSemiLattice;
 
@@ -123,27 +131,9 @@ pub trait AnalysisDomain<'tcx> {
     //
     // FIXME: For backward dataflow analyses, the initial state should be applied to every basic
     // block where control flow could exit the MIR body (e.g., those terminated with `return` or
-    // `resume`). It's not obvious how to handle `yield` points in generators, however.
+    // `resume`). It's not obvious how to handle `yield` points in coroutines, however.
     fn initialize_start_block(&self, body: &mir::Body<'tcx>, state: &mut Self::Domain);
-}
 
-/// A dataflow problem with an arbitrarily complex transfer function.
-///
-/// # Convergence
-///
-/// When implementing this trait directly (not via [`GenKillAnalysis`]), it's possible to choose a
-/// transfer function such that the analysis does not reach fixpoint. To guarantee convergence,
-/// your transfer functions must maintain the following invariant:
-///
-/// > If the dataflow state **before** some point in the program changes to be greater
-/// than the prior state **before** that point, the dataflow state **after** that point must
-/// also change to be greater than the prior state **after** that point.
-///
-/// This invariant guarantees that the dataflow state at a given point in the program increases
-/// monotonically until fixpoint is reached. Note that this monotonicity requirement only applies
-/// to the same point in the program at different points in time. The dataflow state at a given
-/// point in the program may or may not be greater than the state at any preceding point.
-pub trait Analysis<'tcx>: AnalysisDomain<'tcx> {
     /// Updates the current dataflow state with the effect of evaluating a statement.
     fn apply_statement_effect(
         &mut self,
@@ -172,12 +162,14 @@ pub trait Analysis<'tcx>: AnalysisDomain<'tcx> {
     /// in this function. That should go in `apply_call_return_effect`. For example, in the
     /// `InitializedPlaces` analyses, the return place for a function call is not marked as
     /// initialized here.
-    fn apply_terminator_effect(
+    fn apply_terminator_effect<'mir>(
         &mut self,
-        state: &mut Self::Domain,
-        terminator: &mir::Terminator<'tcx>,
-        location: Location,
-    );
+        _state: &mut Self::Domain,
+        terminator: &'mir mir::Terminator<'tcx>,
+        _location: Location,
+    ) -> TerminatorEdges<'mir, 'tcx> {
+        terminator.edges()
+    }
 
     /// Updates the current dataflow state with an effect that occurs immediately *before* the
     /// given terminator.
@@ -202,22 +194,9 @@ pub trait Analysis<'tcx>: AnalysisDomain<'tcx> {
     /// edges.
     fn apply_call_return_effect(
         &mut self,
-        state: &mut Self::Domain,
-        block: BasicBlock,
-        return_places: CallReturnPlaces<'_, 'tcx>,
-    );
-
-    /// Updates the current dataflow state with the effect of resuming from a `Yield` terminator.
-    ///
-    /// This is similar to `apply_call_return_effect` in that it only takes place after the
-    /// generator is resumed, not when it is dropped.
-    ///
-    /// By default, no effects happen.
-    fn apply_yield_resume_effect(
-        &mut self,
         _state: &mut Self::Domain,
-        _resume_block: BasicBlock,
-        _resume_place: mir::Place<'tcx>,
+        _block: BasicBlock,
+        _return_places: CallReturnPlaces<'_, 'tcx>,
     ) {
     }
 
@@ -246,9 +225,7 @@ pub trait Analysis<'tcx>: AnalysisDomain<'tcx> {
 
     /// Creates an `Engine` to find the fixpoint for this dataflow problem.
     ///
-    /// You shouldn't need to override this outside this module, since the combination of the
-    /// default impl and the one for all `A: GenKillAnalysis` will do the right thing.
-    /// Its purpose is to enable method chaining like so:
+    /// You shouldn't need to override this. Its purpose is to enable method chaining like so:
     ///
     /// ```ignore (cross-crate-imports)
     /// let results = MyAnalysis::new(tcx, body)
@@ -265,195 +242,14 @@ pub trait Analysis<'tcx>: AnalysisDomain<'tcx> {
     where
         Self: Sized,
     {
-        Engine::new_generic(tcx, body, self)
-    }
-}
-
-/// Defines an `Analysis` which can be cloned for use in multiple `ResultsCursor`s or
-/// `ResultsVisitor`s. Note this need not be a full clone, only enough of one to be used with a new
-/// `ResultsCursor` or `ResultsVisitor`
-pub trait CloneAnalysis {
-    fn clone_analysis(&self) -> Self;
-}
-impl<'tcx, A> CloneAnalysis for A
-where
-    A: Analysis<'tcx> + Copy,
-{
-    fn clone_analysis(&self) -> Self {
-        *self
-    }
-}
-
-/// A gen/kill dataflow problem.
-///
-/// Each method in this trait has a corresponding one in `Analysis`. However, these methods only
-/// allow modification of the dataflow state via "gen" and "kill" operations. By defining transfer
-/// functions for each statement in this way, the transfer function for an entire basic block can
-/// be computed efficiently.
-///
-/// `Analysis` is automatically implemented for all implementers of `GenKillAnalysis`.
-pub trait GenKillAnalysis<'tcx>: Analysis<'tcx> {
-    type Idx: Idx;
-
-    /// See `Analysis::apply_statement_effect`.
-    fn statement_effect(
-        &mut self,
-        trans: &mut impl GenKill<Self::Idx>,
-        statement: &mir::Statement<'tcx>,
-        location: Location,
-    );
-
-    /// See `Analysis::apply_before_statement_effect`.
-    fn before_statement_effect(
-        &mut self,
-        _trans: &mut impl GenKill<Self::Idx>,
-        _statement: &mir::Statement<'tcx>,
-        _location: Location,
-    ) {
-    }
-
-    /// See `Analysis::apply_terminator_effect`.
-    fn terminator_effect(
-        &mut self,
-        trans: &mut impl GenKill<Self::Idx>,
-        terminator: &mir::Terminator<'tcx>,
-        location: Location,
-    );
-
-    /// See `Analysis::apply_before_terminator_effect`.
-    fn before_terminator_effect(
-        &mut self,
-        _trans: &mut impl GenKill<Self::Idx>,
-        _terminator: &mir::Terminator<'tcx>,
-        _location: Location,
-    ) {
-    }
-
-    /* Edge-specific effects */
-
-    /// See `Analysis::apply_call_return_effect`.
-    fn call_return_effect(
-        &mut self,
-        trans: &mut impl GenKill<Self::Idx>,
-        block: BasicBlock,
-        return_places: CallReturnPlaces<'_, 'tcx>,
-    );
-
-    /// See `Analysis::apply_yield_resume_effect`.
-    fn yield_resume_effect(
-        &mut self,
-        _trans: &mut impl GenKill<Self::Idx>,
-        _resume_block: BasicBlock,
-        _resume_place: mir::Place<'tcx>,
-    ) {
-    }
-
-    /// See `Analysis::apply_switch_int_edge_effects`.
-    fn switch_int_edge_effects<G: GenKill<Self::Idx>>(
-        &mut self,
-        _block: BasicBlock,
-        _discr: &mir::Operand<'tcx>,
-        _edge_effects: &mut impl SwitchIntEdgeEffects<G>,
-    ) {
-    }
-}
-
-impl<'tcx, A> Analysis<'tcx> for A
-where
-    A: GenKillAnalysis<'tcx>,
-    A::Domain: GenKill<A::Idx> + BitSetExt<A::Idx>,
-{
-    fn apply_statement_effect(
-        &mut self,
-        state: &mut A::Domain,
-        statement: &mir::Statement<'tcx>,
-        location: Location,
-    ) {
-        self.statement_effect(state, statement, location);
-    }
-
-    fn apply_before_statement_effect(
-        &mut self,
-        state: &mut A::Domain,
-        statement: &mir::Statement<'tcx>,
-        location: Location,
-    ) {
-        self.before_statement_effect(state, statement, location);
-    }
-
-    fn apply_terminator_effect(
-        &mut self,
-        state: &mut A::Domain,
-        terminator: &mir::Terminator<'tcx>,
-        location: Location,
-    ) {
-        self.terminator_effect(state, terminator, location);
-    }
-
-    fn apply_before_terminator_effect(
-        &mut self,
-        state: &mut A::Domain,
-        terminator: &mir::Terminator<'tcx>,
-        location: Location,
-    ) {
-        self.before_terminator_effect(state, terminator, location);
-    }
-
-    /* Edge-specific effects */
-
-    fn apply_call_return_effect(
-        &mut self,
-        state: &mut A::Domain,
-        block: BasicBlock,
-        return_places: CallReturnPlaces<'_, 'tcx>,
-    ) {
-        self.call_return_effect(state, block, return_places);
-    }
-
-    fn apply_yield_resume_effect(
-        &mut self,
-        state: &mut A::Domain,
-        resume_block: BasicBlock,
-        resume_place: mir::Place<'tcx>,
-    ) {
-        self.yield_resume_effect(state, resume_block, resume_place);
-    }
-
-    fn apply_switch_int_edge_effects(
-        &mut self,
-        block: BasicBlock,
-        discr: &mir::Operand<'tcx>,
-        edge_effects: &mut impl SwitchIntEdgeEffects<A::Domain>,
-    ) {
-        self.switch_int_edge_effects(block, discr, edge_effects);
-    }
-
-    /* Extension methods */
-    #[inline]
-    fn into_engine<'mir>(
-        self,
-        tcx: TyCtxt<'tcx>,
-        body: &'mir mir::Body<'tcx>,
-    ) -> Engine<'mir, 'tcx, Self>
-    where
-        Self: Sized,
-    {
-        Engine::new_gen_kill(tcx, body, self)
+        Engine::new(tcx, body, self)
     }
 }
 
 /// The legal operations for a transfer function in a gen/kill problem.
-///
-/// This abstraction exists because there are two different contexts in which we call the methods in
-/// `GenKillAnalysis`. Sometimes we need to store a single transfer function that can be efficiently
-/// applied multiple times, such as when computing the cumulative transfer function for each block.
-/// These cases require a `GenKillSet`, which in turn requires two `BitSet`s of storage. Oftentimes,
-/// however, we only need to apply an effect once. In *these* cases, it is more efficient to pass the
-/// `BitSet` representing the state vector directly into the `*_effect` methods as opposed to
-/// building up a `GenKillSet` and then throwing it away.
 pub trait GenKill<T> {
     /// Inserts `elem` into the state vector.
-    fn gen(&mut self, elem: T);
+    fn gen_(&mut self, elem: T);
 
     /// Removes `elem` from the state vector.
     fn kill(&mut self, elem: T);
@@ -461,7 +257,7 @@ pub trait GenKill<T> {
     /// Calls `gen` for each element in `elems`.
     fn gen_all(&mut self, elems: impl IntoIterator<Item = T>) {
         for elem in elems {
-            self.gen(elem);
+            self.gen_(elem);
         }
     }
 
@@ -473,46 +269,8 @@ pub trait GenKill<T> {
     }
 }
 
-/// Stores a transfer function for a gen/kill problem.
-///
-/// Calling `gen`/`kill` on a `GenKillSet` will "build up" a transfer function so that it can be
-/// applied multiple times efficiently. When there are multiple calls to `gen` and/or `kill` for
-/// the same element, the most recent one takes precedence.
-#[derive(Clone)]
-pub struct GenKillSet<T> {
-    gen: HybridBitSet<T>,
-    kill: HybridBitSet<T>,
-}
-
-impl<T: Idx> GenKillSet<T> {
-    /// Creates a new transfer function that will leave the dataflow state unchanged.
-    pub fn identity(universe: usize) -> Self {
-        GenKillSet {
-            gen: HybridBitSet::new_empty(universe),
-            kill: HybridBitSet::new_empty(universe),
-        }
-    }
-
-    pub fn apply(&self, state: &mut impl BitSetExt<T>) {
-        state.union(&self.gen);
-        state.subtract(&self.kill);
-    }
-}
-
-impl<T: Idx> GenKill<T> for GenKillSet<T> {
-    fn gen(&mut self, elem: T) {
-        self.gen.insert(elem);
-        self.kill.remove(elem);
-    }
-
-    fn kill(&mut self, elem: T) {
-        self.kill.insert(elem);
-        self.gen.remove(elem);
-    }
-}
-
 impl<T: Idx> GenKill<T> for BitSet<T> {
-    fn gen(&mut self, elem: T) {
+    fn gen_(&mut self, elem: T) {
         self.insert(elem);
     }
 
@@ -522,7 +280,7 @@ impl<T: Idx> GenKill<T> for BitSet<T> {
 }
 
 impl<T: Idx> GenKill<T> for ChunkedBitSet<T> {
-    fn gen(&mut self, elem: T) {
+    fn gen_(&mut self, elem: T) {
         self.insert(elem);
     }
 
@@ -531,8 +289,26 @@ impl<T: Idx> GenKill<T> for ChunkedBitSet<T> {
     }
 }
 
+impl<T, S: GenKill<T>> GenKill<T> for MaybeReachable<S> {
+    fn gen_(&mut self, elem: T) {
+        match self {
+            // If the state is not reachable, adding an element does nothing.
+            MaybeReachable::Unreachable => {}
+            MaybeReachable::Reachable(set) => set.gen_(elem),
+        }
+    }
+
+    fn kill(&mut self, elem: T) {
+        match self {
+            // If the state is not reachable, killing an element does nothing.
+            MaybeReachable::Unreachable => {}
+            MaybeReachable::Reachable(set) => set.kill(elem),
+        }
+    }
+}
+
 impl<T: Idx> GenKill<T> for lattice::Dual<BitSet<T>> {
-    fn gen(&mut self, elem: T) {
+    fn gen_(&mut self, elem: T) {
         self.0.insert(elem);
     }
 
@@ -543,7 +319,7 @@ impl<T: Idx> GenKill<T> for lattice::Dual<BitSet<T>> {
 
 // NOTE: DO NOT CHANGE VARIANT ORDER. The derived `Ord` impls rely on the current order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Effect {
+enum Effect {
     /// The "before" effect (e.g., `apply_before_statement_effect`) for a statement (or
     /// terminator).
     Before,
@@ -553,7 +329,7 @@ pub enum Effect {
 }
 
 impl Effect {
-    pub const fn at_index(self, statement_index: usize) -> EffectIndex {
+    const fn at_index(self, statement_index: usize) -> EffectIndex {
         EffectIndex { effect: self, statement_index }
     }
 }
@@ -610,30 +386,6 @@ pub trait SwitchIntEdgeEffects<D> {
     /// Calls `apply_edge_effect` for each outgoing edge from a `SwitchInt` terminator and
     /// records the results.
     fn apply(&mut self, apply_edge_effect: impl FnMut(&mut D, SwitchIntTarget));
-}
-
-/// List of places that are written to after a successful (non-unwind) return
-/// from a `Call` or `InlineAsm`.
-pub enum CallReturnPlaces<'a, 'tcx> {
-    Call(mir::Place<'tcx>),
-    InlineAsm(&'a [mir::InlineAsmOperand<'tcx>]),
-}
-
-impl<'tcx> CallReturnPlaces<'_, 'tcx> {
-    pub fn for_each(&self, mut f: impl FnMut(mir::Place<'tcx>)) {
-        match *self {
-            Self::Call(place) => f(place),
-            Self::InlineAsm(operands) => {
-                for op in operands {
-                    match *op {
-                        mir::InlineAsmOperand::Out { place: Some(place), .. }
-                        | mir::InlineAsmOperand::InOut { out_place: Some(place), .. } => f(place),
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

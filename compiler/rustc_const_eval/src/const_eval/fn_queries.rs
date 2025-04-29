@@ -1,10 +1,9 @@
-use rustc_attr as attr;
-use rustc_hir as hir;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_middle::query::Providers;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::symbol::Symbol;
+use {rustc_attr as attr, rustc_hir as hir};
 
 /// Whether the `def_id` is an unstable const fn and what feature gate(s) are necessary to enable
 /// it.
@@ -28,20 +27,25 @@ pub fn is_parent_const_impl_raw(tcx: TyCtxt<'_>, def_id: LocalDefId) -> bool {
         && tcx.constness(parent_id) == hir::Constness::Const
 }
 
-/// Checks whether an item is considered to be `const`. If it is a constructor, it is const. If
-/// it is a trait impl/function, return if it has a `const` modifier. If it is an intrinsic,
-/// report whether said intrinsic has a `rustc_const_{un,}stable` attribute. Otherwise, return
-/// `Constness::NotConst`.
+/// Checks whether an item is considered to be `const`. If it is a constructor, anonymous const,
+/// const block, const item or associated const, it is const. If it is a trait impl/function,
+/// return if it has a `const` modifier. If it is an intrinsic, report whether said intrinsic
+/// has a `rustc_const_{un,}stable` attribute. Otherwise, return `Constness::NotConst`.
 fn constness(tcx: TyCtxt<'_>, def_id: LocalDefId) -> hir::Constness {
-    let node = tcx.hir().get_by_def_id(def_id);
+    let node = tcx.hir_node_by_def_id(def_id);
 
     match node {
-        hir::Node::Ctor(_) => hir::Constness::Const,
+        hir::Node::Ctor(_)
+        | hir::Node::AnonConst(_)
+        | hir::Node::ConstBlock(_)
+        | hir::Node::ImplItem(hir::ImplItem { kind: hir::ImplItemKind::Const(..), .. }) => {
+            hir::Constness::Const
+        }
         hir::Node::Item(hir::Item { kind: hir::ItemKind::Impl(impl_), .. }) => impl_.constness,
         hir::Node::ForeignItem(hir::ForeignItem { kind: hir::ForeignItemKind::Fn(..), .. }) => {
             // Intrinsics use `rustc_const_{un,}stable` attributes to indicate constness. All other
             // foreign items cannot be evaluated at compile-time.
-            let is_const = if tcx.is_intrinsic(def_id) {
+            let is_const = if tcx.intrinsic(def_id).is_some() {
                 tcx.lookup_const_stability(def_id).is_some()
             } else {
                 false
@@ -73,8 +77,8 @@ fn is_promotable_const_fn(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
                 if cfg!(debug_assertions) && stab.promotable {
                     let sig = tcx.fn_sig(def_id);
                     assert_eq!(
-                        sig.skip_binder().unsafety(),
-                        hir::Unsafety::Normal,
+                        sig.skip_binder().safety(),
+                        hir::Safety::Safe,
                         "don't mark const unsafe fns as promotable",
                         // https://github.com/rust-lang/rust/pull/53851#issuecomment-418760682
                     );

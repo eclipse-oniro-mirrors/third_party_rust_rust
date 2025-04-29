@@ -3,6 +3,8 @@
 //! static S: &/* 'static */str = "";
 //! ```
 use either::Either;
+use ide_db::famous_defs::FamousDefs;
+use span::EditionedFileId;
 use syntax::{
     ast::{self, AstNode},
     SyntaxKind,
@@ -12,7 +14,9 @@ use crate::{InlayHint, InlayHintPosition, InlayHintsConfig, InlayKind, LifetimeE
 
 pub(super) fn hints(
     acc: &mut Vec<InlayHint>,
+    FamousDefs(_sema, _): &FamousDefs<'_, '_>,
     config: &InlayHintsConfig,
+    _file_id: EditionedFileId,
     statik_or_const: Either<ast::Static, ast::Const>,
 ) -> Option<()> {
     if config.lifetime_elision_hints != LifetimeElisionHints::Always {
@@ -33,11 +37,12 @@ pub(super) fn hints(
             acc.push(InlayHint {
                 range: t.text_range(),
                 kind: InlayKind::Lifetime,
-                label: "'static".to_owned().into(),
+                label: "'static".into(),
                 text_edit: None,
                 position: InlayHintPosition::After,
                 pad_left: false,
                 pad_right: true,
+                resolve_parent: None,
             });
         }
     }

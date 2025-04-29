@@ -1,8 +1,8 @@
-// assembly-output: emit-asm
-// compile-flags: --target msp430-none-elf
-// needs-llvm-components: msp430
+//@ assembly-output: emit-asm
+//@ compile-flags: --target msp430-none-elf
+//@ needs-llvm-components: msp430
 
-#![feature(no_core, lang_items, rustc_attrs, asm_experimental_arch, asm_const)]
+#![feature(no_core, lang_items, rustc_attrs, asm_experimental_arch)]
 #![crate_type = "rlib"]
 #![no_core]
 #![allow(non_camel_case_types)]

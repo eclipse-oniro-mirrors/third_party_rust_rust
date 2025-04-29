@@ -1,15 +1,67 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
-use crate::ArtificialField;
-use crate::Overlap;
-use crate::{AccessDepth, Deep, Shallow};
-use rustc_hir as hir;
-use rustc_middle::mir::{
-    Body, BorrowKind, Local, MutBorrowKind, Place, PlaceElem, PlaceRef, ProjectionElem,
-};
-use rustc_middle::ty::{self, TyCtxt};
+//! The borrowck rules for proving disjointness are applied from the "root" of the
+//! borrow forwards, iterating over "similar" projections in lockstep until
+//! we can prove overlap one way or another. Essentially, we treat `Overlap` as
+//! a monoid and report a conflict if the product ends up not being `Disjoint`.
+//!
+//! On each step, if we didn't run out of borrow or place, we know that our elements
+//! have the same type, and that they only overlap if they are the identical.
+//!
+//! For example, if we are comparing these:
+//! ```text
+//! BORROW:  (*x1[2].y).z.a
+//! ACCESS:  (*x1[i].y).w.b
+//! ```
+//!
+//! Then our steps are:
+//! ```text
+//!       x1         |   x1          -- places are the same
+//!       x1[2]      |   x1[i]       -- equal or disjoint (disjoint if indexes differ)
+//!       x1[2].y    |   x1[i].y     -- equal or disjoint
+//!      *x1[2].y    |  *x1[i].y     -- equal or disjoint
+//!     (*x1[2].y).z | (*x1[i].y).w  -- we are disjoint and don't need to check more!
+//! ```
+//!
+//! Because `zip` does potentially bad things to the iterator inside, this loop
+//! also handles the case where the access might be a *prefix* of the borrow, e.g.
+//!
+//! ```text
+//! BORROW:  (*x1[2].y).z.a
+//! ACCESS:  x1[i].y
+//! ```
+//!
+//! Then our steps are:
+//! ```text
+//!       x1         |   x1          -- places are the same
+//!       x1[2]      |   x1[i]       -- equal or disjoint (disjoint if indexes differ)
+//!       x1[2].y    |   x1[i].y     -- equal or disjoint
+//! ```
+//!
+//! -- here we run out of access - the borrow can access a part of it. If this
+//! is a full deep access, then we *know* the borrow conflicts with it. However,
+//! if the access is shallow, then we can proceed:
+//!
+//! ```text
+//!       x1[2].y    | (*x1[i].y)    -- a deref! the access can't get past this, so we
+//!                                     are disjoint
+//! ```
+//!
+//! Our invariant is, that at each step of the iteration:
+//!  - If we didn't run out of access to match, our borrow and access are comparable
+//!    and either equal or disjoint.
+//!  - If we did run out of access, the borrow can access a part of it.
+
 use std::cmp::max;
 use std::iter;
+
+use rustc_hir as hir;
+use rustc_middle::bug;
+use rustc_middle::mir::{
+    Body, BorrowKind, FakeBorrowKind, MutBorrowKind, Place, PlaceElem, PlaceRef, ProjectionElem,
+};
+use rustc_middle::ty::{self, TyCtxt};
+use tracing::{debug, instrument};
+
+use crate::{AccessDepth, ArtificialField, Deep, Overlap, Shallow};
 
 /// When checking if a place conflicts with another place, this enum is used to influence decisions
 /// where a place might be equal or disjoint with another place, such as if `a[i] == a[j]`.
@@ -48,7 +100,7 @@ pub fn places_conflict<'tcx>(
 /// access depth. The `bias` parameter is used to determine how the unknowable (comparing runtime
 /// array indices, for example) should be interpreted - this depends on what the caller wants in
 /// order to make the conservative choice and preserve soundness.
-#[instrument(level = "debug", skip(tcx, body))]
+#[inline]
 pub(super) fn borrow_conflicts_with_place<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
@@ -58,15 +110,24 @@ pub(super) fn borrow_conflicts_with_place<'tcx>(
     access: AccessDepth,
     bias: PlaceConflictBias,
 ) -> bool {
+    let borrow_local = borrow_place.local;
+    let access_local = access_place.local;
+
+    if borrow_local != access_local {
+        // We have proven the borrow disjoint - further projections will remain disjoint.
+        return false;
+    }
+
     // This Local/Local case is handled by the more general code below, but
     // it's so common that it's a speed win to check for it first.
-    if let Some(l1) = borrow_place.as_local() && let Some(l2) = access_place.as_local() {
-        return l1 == l2;
+    if borrow_place.projection.is_empty() && access_place.projection.is_empty() {
+        return true;
     }
 
     place_components_conflict(tcx, body, borrow_place, borrow_kind, access_place, access, bias)
 }
 
+#[instrument(level = "debug", skip(tcx, body))]
 fn place_components_conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
@@ -76,65 +137,10 @@ fn place_components_conflict<'tcx>(
     access: AccessDepth,
     bias: PlaceConflictBias,
 ) -> bool {
-    // The borrowck rules for proving disjointness are applied from the "root" of the
-    // borrow forwards, iterating over "similar" projections in lockstep until
-    // we can prove overlap one way or another. Essentially, we treat `Overlap` as
-    // a monoid and report a conflict if the product ends up not being `Disjoint`.
-    //
-    // At each step, if we didn't run out of borrow or place, we know that our elements
-    // have the same type, and that they only overlap if they are the identical.
-    //
-    // For example, if we are comparing these:
-    // BORROW:  (*x1[2].y).z.a
-    // ACCESS:  (*x1[i].y).w.b
-    //
-    // Then our steps are:
-    //       x1         |   x1          -- places are the same
-    //       x1[2]      |   x1[i]       -- equal or disjoint (disjoint if indexes differ)
-    //       x1[2].y    |   x1[i].y     -- equal or disjoint
-    //      *x1[2].y    |  *x1[i].y     -- equal or disjoint
-    //     (*x1[2].y).z | (*x1[i].y).w  -- we are disjoint and don't need to check more!
-    //
-    // Because `zip` does potentially bad things to the iterator inside, this loop
-    // also handles the case where the access might be a *prefix* of the borrow, e.g.
-    //
-    // BORROW:  (*x1[2].y).z.a
-    // ACCESS:  x1[i].y
-    //
-    // Then our steps are:
-    //       x1         |   x1          -- places are the same
-    //       x1[2]      |   x1[i]       -- equal or disjoint (disjoint if indexes differ)
-    //       x1[2].y    |   x1[i].y     -- equal or disjoint
-    //
-    // -- here we run out of access - the borrow can access a part of it. If this
-    // is a full deep access, then we *know* the borrow conflicts with it. However,
-    // if the access is shallow, then we can proceed:
-    //
-    //       x1[2].y    | (*x1[i].y)    -- a deref! the access can't get past this, so we
-    //                                     are disjoint
-    //
-    // Our invariant is, that at each step of the iteration:
-    //  - If we didn't run out of access to match, our borrow and access are comparable
-    //    and either equal or disjoint.
-    //  - If we did run out of access, the borrow can access a part of it.
-
     let borrow_local = borrow_place.local;
     let access_local = access_place.local;
-
-    match place_base_conflict(borrow_local, access_local) {
-        Overlap::Arbitrary => {
-            bug!("Two base can't return Arbitrary");
-        }
-        Overlap::EqualOrDisjoint => {
-            // This is the recursive case - proceed to the next element.
-        }
-        Overlap::Disjoint => {
-            // We have proven the borrow disjoint - further
-            // projections will remain disjoint.
-            debug!("borrow_conflicts_with_place: disjoint");
-            return false;
-        }
-    }
+    // borrow_conflicts_with_place should have checked that.
+    assert_eq!(borrow_local, access_local);
 
     // loop invariant: borrow_c is always either equal to access_c or disjoint from it.
     for ((borrow_place, borrow_c), &access_c) in
@@ -196,9 +202,9 @@ fn place_components_conflict<'tcx>(
 
             let base_ty = base.ty(body, tcx).ty;
 
-            match (elem, &base_ty.kind(), access) {
+            match (elem, base_ty.kind(), access) {
                 (_, _, Shallow(Some(ArtificialField::ArrayLength)))
-                | (_, _, Shallow(Some(ArtificialField::ShallowBorrow))) => {
+                | (_, _, Shallow(Some(ArtificialField::FakeBorrow))) => {
                     // The array length is like additional fields on the
                     // type; it does not overlap any existing data there.
                     // Furthermore, if cannot actually be a prefix of any
@@ -243,6 +249,7 @@ fn place_components_conflict<'tcx>(
                 | (ProjectionElem::ConstantIndex { .. }, _, _)
                 | (ProjectionElem::Subslice { .. }, _, _)
                 | (ProjectionElem::OpaqueCast { .. }, _, _)
+                | (ProjectionElem::Subtype(_), _, _)
                 | (ProjectionElem::Downcast { .. }, _, _) => {
                     // Recursive case. This can still be disjoint on a
                     // further iteration if this a shallow access and
@@ -266,7 +273,7 @@ fn place_components_conflict<'tcx>(
     // If the second example, where we did, then we still know
     // that the borrow can access a *part* of our place that
     // our access cares about, so we still have a conflict.
-    if borrow_kind == BorrowKind::Shallow
+    if borrow_kind == BorrowKind::Fake(FakeBorrowKind::Shallow)
         && borrow_place.projection.len() < access_place.projection.len()
     {
         debug!("borrow_conflicts_with_place: shallow borrow");
@@ -274,21 +281,6 @@ fn place_components_conflict<'tcx>(
     } else {
         debug!("borrow_conflicts_with_place: full borrow, CONFLICT");
         true
-    }
-}
-
-// Given that the bases of `elem1` and `elem2` are always either equal
-// or disjoint (and have the same type!), return the overlap situation
-// between `elem1` and `elem2`.
-fn place_base_conflict(l1: Local, l2: Local) -> Overlap {
-    if l1 == l2 {
-        // the same local - base case, equal
-        debug!("place_element_conflict: DISJOINT-OR-EQ-LOCAL");
-        Overlap::EqualOrDisjoint
-    } else {
-        // different locals - base case, disjoint
-        debug!("place_element_conflict: DISJOINT-LOCAL");
-        Overlap::Disjoint
     }
 }
 
@@ -517,6 +509,7 @@ fn place_projection_conflict<'tcx>(
             | ProjectionElem::Field(..)
             | ProjectionElem::Index(..)
             | ProjectionElem::ConstantIndex { .. }
+            | ProjectionElem::Subtype(_)
             | ProjectionElem::OpaqueCast { .. }
             | ProjectionElem::Subslice { .. }
             | ProjectionElem::Downcast(..),

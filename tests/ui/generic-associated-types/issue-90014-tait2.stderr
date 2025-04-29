@@ -1,12 +1,12 @@
-error: 
-  --> $DIR/issue-90014-tait2.rs:41:27
+error[E0792]: expected generic lifetime parameter, found `'a`
+  --> $DIR/issue-90014-tait2.rs:26:9
    |
-LL |     fn make_fut(&self) -> Box<dyn for<'a> Trait<'a, Thing = Fut<'a>>> {
-   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^query stack during panic:
-#0 [typeck] type-checking `<impl at $DIR/issue-90014-tait2.rs:40:1: 40:13>::make_fut`
-#1 [type_of] computing type of `Fut::{opaque#0}`
-#2 [check_mod_item_types] checking item types in top-level module
-#3 [analysis] running analysis passes on this crate
-end of query stack
-error: aborting due to previous error
+LL | type Fut<'a> = impl Future<Output = ()>;
+   |          -- this generic parameter must be used with a generic lifetime parameter
+...
+LL |         Box::new((async { () },))
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^
 
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0792`.

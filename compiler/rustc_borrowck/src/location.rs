@@ -1,7 +1,6 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
 use rustc_index::IndexVec;
 use rustc_middle::mir::{BasicBlock, Body, Location};
+use tracing::debug;
 
 /// Maps between a MIR Location, which identifies a particular
 /// statement within a basic block, to a "rich location", which
@@ -20,6 +19,7 @@ pub struct LocationTable {
 }
 
 rustc_index::newtype_index! {
+    #[orderable]
     #[debug_format = "LocationIndex({})"]
     pub struct LocationIndex {}
 }

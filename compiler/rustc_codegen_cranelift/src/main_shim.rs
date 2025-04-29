@@ -1,7 +1,8 @@
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use rustc_hir::LangItem;
-use rustc_middle::ty::subst::GenericArg;
-use rustc_middle::ty::AssocKind;
-use rustc_session::config::{sigpipe, EntryFnType};
+use rustc_middle::ty::{AssocKind, GenericArg};
+use rustc_session::config::{EntryFnType, sigpipe};
+use rustc_span::DUMMY_SP;
 use rustc_span::symbol::Ident;
 
 use crate::prelude::*;
@@ -10,37 +11,32 @@ use crate::prelude::*;
 /// users main function.
 pub(crate) fn maybe_create_entry_wrapper(
     tcx: TyCtxt<'_>,
-    module: &mut impl Module,
-    unwind_context: &mut UnwindContext,
+    module: &mut dyn Module,
     is_jit: bool,
     is_primary_cgu: bool,
 ) {
     let (main_def_id, (is_main_fn, sigpipe)) = match tcx.entry_fn(()) {
-        Some((def_id, entry_ty)) => (
-            def_id,
-            match entry_ty {
-                EntryFnType::Main { sigpipe } => (true, sigpipe),
-                EntryFnType::Start => (false, sigpipe::DEFAULT),
-            },
-        ),
+        Some((def_id, entry_ty)) => (def_id, match entry_ty {
+            EntryFnType::Main { sigpipe } => (true, sigpipe),
+            EntryFnType::Start => (false, sigpipe::DEFAULT),
+        }),
         None => return,
     };
 
     if main_def_id.is_local() {
         let instance = Instance::mono(tcx, main_def_id).polymorphize(tcx);
-        if !is_jit && module.get_name(tcx.symbol_name(instance).name).is_none() {
+        if module.get_name(tcx.symbol_name(instance).name).is_none() {
             return;
         }
     } else if !is_primary_cgu {
         return;
     }
 
-    create_entry_fn(tcx, module, unwind_context, main_def_id, is_jit, is_main_fn, sigpipe);
+    create_entry_fn(tcx, module, main_def_id, is_jit, is_main_fn, sigpipe);
 
     fn create_entry_fn(
         tcx: TyCtxt<'_>,
-        m: &mut impl Module,
-        unwind_context: &mut UnwindContext,
+        m: &mut dyn Module,
         rust_main_def_id: DefId,
         ignore_lang_start_wrapper: bool,
         is_main_fn: bool,
@@ -74,7 +70,7 @@ pub(crate) fn maybe_create_entry_wrapper(
         let cmain_func_id = match m.declare_function(entry_name, Linkage::Export, &cmain_sig) {
             Ok(func_id) => func_id,
             Err(err) => {
-                tcx.sess
+                tcx.dcx()
                     .fatal(format!("entry symbol `{entry_name}` declared multiple times: {err}"));
             }
         };
@@ -115,14 +111,13 @@ pub(crate) fn maybe_create_entry_wrapper(
                         termination_trait,
                     )
                     .unwrap();
-                let report = Instance::resolve(
+                let report = Instance::expect_resolve(
                     tcx,
                     ParamEnv::reveal_all(),
                     report.def_id,
-                    tcx.mk_substs(&[GenericArg::from(main_ret_ty)]),
+                    tcx.mk_args(&[GenericArg::from(main_ret_ty)]),
+                    DUMMY_SP,
                 )
-                .unwrap()
-                .unwrap()
                 .polymorphize(tcx);
 
                 let report_name = tcx.symbol_name(report).name;
@@ -142,14 +137,13 @@ pub(crate) fn maybe_create_entry_wrapper(
                 }
             } else if is_main_fn {
                 let start_def_id = tcx.require_lang_item(LangItem::Start, None);
-                let start_instance = Instance::resolve(
+                let start_instance = Instance::expect_resolve(
                     tcx,
                     ParamEnv::reveal_all(),
                     start_def_id,
-                    tcx.mk_substs(&[main_ret_ty.into()]),
+                    tcx.mk_args(&[main_ret_ty.into()]),
+                    DUMMY_SP,
                 )
-                .unwrap()
-                .unwrap()
                 .polymorphize(tcx);
                 let start_func_id = import_function(tcx, m, start_instance);
 
@@ -171,9 +165,7 @@ pub(crate) fn maybe_create_entry_wrapper(
         }
 
         if let Err(err) = m.define_function(cmain_func_id, &mut ctx) {
-            tcx.sess.fatal(format!("entry symbol `{entry_name}` defined multiple times: {err}"));
+            tcx.dcx().fatal(format!("entry symbol `{entry_name}` defined multiple times: {err}"));
         }
-
-        unwind_context.add_function(cmain_func_id, &ctx, m.isa());
     }
 }

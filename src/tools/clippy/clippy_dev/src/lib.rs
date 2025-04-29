@@ -1,9 +1,13 @@
-#![feature(lazy_cell)]
 #![feature(let_chains)]
 #![feature(rustc_private)]
-#![cfg_attr(feature = "deny-warnings", deny(warnings))]
-// warn on lints, that are included in `rust-lang/rust`s bootstrap
-#![warn(rust_2018_idioms, unused_lifetimes)]
+#![warn(
+    trivial_casts,
+    trivial_numeric_casts,
+    rust_2018_idioms,
+    unused_lifetimes,
+    unused_qualifications
+)]
+#![allow(clippy::missing_panics_doc)]
 
 // The `rustc_driver` crate seems to be required in order to use the `rust_lexer` crate.
 #[allow(unused_extern_crates)]
@@ -51,7 +55,7 @@ pub fn clippy_project_root() -> PathBuf {
     for path in current_dir.ancestors() {
         let result = std::fs::read_to_string(path.join("Cargo.toml"));
         if let Err(err) = &result {
-            if err.kind() == std::io::ErrorKind::NotFound {
+            if err.kind() == io::ErrorKind::NotFound {
                 continue;
             }
         }

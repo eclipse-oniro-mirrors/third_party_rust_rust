@@ -1,19 +1,25 @@
-use crate::dep_graph::{DepNode, WorkProduct, WorkProductId};
-use crate::ty::{subst::InternalSubsts, Instance, InstanceDef, SymbolName, TyCtxt};
-use rustc_attr::InlineAttr;
-use rustc_data_structures::base_n;
-use rustc_data_structures::fingerprint::Fingerprint;
-use rustc_data_structures::fx::FxHashMap;
-use rustc_data_structures::stable_hasher::{Hash128, HashStable, StableHasher};
-use rustc_hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
-use rustc_hir::ItemId;
-use rustc_index::Idx;
-use rustc_query_system::ich::StableHashingContext;
-use rustc_session::config::OptLevel;
-use rustc_span::source_map::Span;
-use rustc_span::symbol::Symbol;
 use std::fmt;
 use std::hash::Hash;
+
+use rustc_attr::InlineAttr;
+use rustc_data_structures::base_n::{BaseNString, CASE_INSENSITIVE, ToBaseN};
+use rustc_data_structures::fingerprint::Fingerprint;
+use rustc_data_structures::fx::FxIndexMap;
+use rustc_data_structures::stable_hasher::{Hash128, HashStable, StableHasher, ToStableHashKey};
+use rustc_data_structures::unord::UnordMap;
+use rustc_hir::ItemId;
+use rustc_hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
+use rustc_index::Idx;
+use rustc_macros::{HashStable, TyDecodable, TyEncodable};
+use rustc_query_system::ich::StableHashingContext;
+use rustc_session::config::OptLevel;
+use rustc_span::Span;
+use rustc_span::symbol::Symbol;
+use rustc_target::spec::SymbolVisibility;
+use tracing::debug;
+
+use crate::dep_graph::{DepNode, WorkProduct, WorkProductId};
+use crate::ty::{GenericArgs, Instance, InstanceKind, SymbolName, TyCtxt};
 
 /// Describes how a monomorphization will be instantiated in object files.
 #[derive(PartialEq)]
@@ -51,27 +57,40 @@ impl<'tcx> MonoItem<'tcx> {
     /// Returns `true` if the mono item is user-defined (i.e. not compiler-generated, like shims).
     pub fn is_user_defined(&self) -> bool {
         match *self {
-            MonoItem::Fn(instance) => matches!(instance.def, InstanceDef::Item(..)),
+            MonoItem::Fn(instance) => matches!(instance.def, InstanceKind::Item(..)),
             MonoItem::Static(..) | MonoItem::GlobalAsm(..) => true,
         }
     }
 
+    // Note: if you change how item size estimates work, you might need to
+    // change NON_INCR_MIN_CGU_SIZE as well.
     pub fn size_estimate(&self, tcx: TyCtxt<'tcx>) -> usize {
         match *self {
             MonoItem::Fn(instance) => {
-                // Estimate the size of a function based on how many statements
-                // it contains.
-                tcx.instance_def_size_estimate(instance.def)
+                match instance.def {
+                    // "Normal" functions size estimate: the number of
+                    // statements, plus one for the terminator.
+                    InstanceKind::Item(..)
+                    | InstanceKind::DropGlue(..)
+                    | InstanceKind::AsyncDropGlueCtorShim(..) => {
+                        let mir = tcx.instance_mir(instance.def);
+                        mir.basic_blocks.iter().map(|bb| bb.statements.len() + 1).sum()
+                    }
+                    // Other compiler-generated shims size estimate: 1
+                    _ => 1,
+                }
             }
-            // Conservatively estimate the size of a static declaration
-            // or assembly to be 1.
+            // Conservatively estimate the size of a static declaration or
+            // assembly item to be 1.
             MonoItem::Static(_) | MonoItem::GlobalAsm(_) => 1,
         }
     }
 
-    pub fn is_generic_fn(&self) -> bool {
-        match *self {
-            MonoItem::Fn(ref instance) => instance.substs.non_erasable_generics().next().is_some(),
+    pub fn is_generic_fn(&self, tcx: TyCtxt<'tcx>) -> bool {
+        match self {
+            MonoItem::Fn(instance) => {
+                instance.args.non_erasable_generics(tcx, instance.def_id()).next().is_some()
+            }
             MonoItem::Static(..) | MonoItem::GlobalAsm(..) => false,
         }
     }
@@ -168,14 +187,14 @@ impl<'tcx> MonoItem<'tcx> {
     /// which will never be accessed) in its place.
     pub fn is_instantiable(&self, tcx: TyCtxt<'tcx>) -> bool {
         debug!("is_instantiable({:?})", self);
-        let (def_id, substs) = match *self {
-            MonoItem::Fn(ref instance) => (instance.def_id(), instance.substs),
-            MonoItem::Static(def_id) => (def_id, InternalSubsts::empty()),
+        let (def_id, args) = match *self {
+            MonoItem::Fn(ref instance) => (instance.def_id(), instance.args),
+            MonoItem::Static(def_id) => (def_id, GenericArgs::empty()),
             // global asm never has predicates
             MonoItem::GlobalAsm(..) => return true,
         };
 
-        !tcx.subst_and_check_impossible_predicates((def_id, &substs))
+        !tcx.instantiate_and_check_impossible_predicates((def_id, &args))
     }
 
     pub fn local_span(&self, tcx: TyCtxt<'tcx>) -> Option<Span> {
@@ -214,28 +233,52 @@ impl<'tcx> MonoItem<'tcx> {
 impl<'tcx> fmt::Display for MonoItem<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            MonoItem::Fn(instance) => write!(f, "fn {}", instance),
+            MonoItem::Fn(instance) => write!(f, "fn {instance}"),
             MonoItem::Static(def_id) => {
-                write!(f, "static {}", Instance::new(def_id, InternalSubsts::empty()))
+                write!(f, "static {}", Instance::new(def_id, GenericArgs::empty()))
             }
             MonoItem::GlobalAsm(..) => write!(f, "global_asm"),
         }
     }
 }
 
-#[derive(Debug)]
+impl ToStableHashKey<StableHashingContext<'_>> for MonoItem<'_> {
+    type KeyType = Fingerprint;
+
+    fn to_stable_hash_key(&self, hcx: &StableHashingContext<'_>) -> Self::KeyType {
+        let mut hasher = StableHasher::new();
+        self.hash_stable(&mut hcx.clone(), &mut hasher);
+        hasher.finish()
+    }
+}
+
+#[derive(Debug, HashStable)]
 pub struct CodegenUnit<'tcx> {
     /// A name for this CGU. Incremental compilation requires that
     /// name be unique amongst **all** crates. Therefore, it should
     /// contain something unique to this crate (e.g., a module path)
     /// as well as the crate name and disambiguator.
     name: Symbol,
-    items: FxHashMap<MonoItem<'tcx>, (Linkage, Visibility)>,
+    items: FxIndexMap<MonoItem<'tcx>, MonoItemData>,
     size_estimate: usize,
     primary: bool,
     /// True if this is CGU is used to hold code coverage information for dead code,
     /// false otherwise.
     is_code_coverage_dead_code_cgu: bool,
+}
+
+/// Auxiliary info about a `MonoItem`.
+#[derive(Copy, Clone, PartialEq, Debug, HashStable)]
+pub struct MonoItemData {
+    /// A cached copy of the result of `MonoItem::instantiation_mode`, where
+    /// `GloballyShared` maps to `false` and `LocalCopy` maps to `true`.
+    pub inlined: bool,
+
+    pub linkage: Linkage,
+    pub visibility: Visibility,
+
+    /// A cached copy of the result of `MonoItem::size_estimate`.
+    pub size_estimate: usize,
 }
 
 /// Specifies the linkage type for a `MonoItem`.
@@ -261,6 +304,16 @@ pub enum Visibility {
     Default,
     Hidden,
     Protected,
+}
+
+impl From<SymbolVisibility> for Visibility {
+    fn from(value: SymbolVisibility) -> Self {
+        match value {
+            SymbolVisibility::Hidden => Visibility::Hidden,
+            SymbolVisibility::Protected => Visibility::Protected,
+            SymbolVisibility::Interposable => Visibility::Default,
+        }
+    }
 }
 
 impl<'tcx> CodegenUnit<'tcx> {
@@ -291,13 +344,11 @@ impl<'tcx> CodegenUnit<'tcx> {
         self.primary = true;
     }
 
-    /// The order of these items is non-determinstic.
-    pub fn items(&self) -> &FxHashMap<MonoItem<'tcx>, (Linkage, Visibility)> {
+    pub fn items(&self) -> &FxIndexMap<MonoItem<'tcx>, MonoItemData> {
         &self.items
     }
 
-    /// The order of these items is non-determinstic.
-    pub fn items_mut(&mut self) -> &mut FxHashMap<MonoItem<'tcx>, (Linkage, Visibility)> {
+    pub fn items_mut(&mut self) -> &mut FxIndexMap<MonoItem<'tcx>, MonoItemData> {
         &mut self.items
     }
 
@@ -310,26 +361,23 @@ impl<'tcx> CodegenUnit<'tcx> {
         self.is_code_coverage_dead_code_cgu = true;
     }
 
-    pub fn mangle_name(human_readable_name: &str) -> String {
-        // We generate a 80 bit hash from the name. This should be enough to
-        // avoid collisions and is still reasonably short for filenames.
+    pub fn mangle_name(human_readable_name: &str) -> BaseNString {
         let mut hasher = StableHasher::new();
         human_readable_name.hash(&mut hasher);
         let hash: Hash128 = hasher.finish();
-        let hash = hash.as_u128() & ((1u128 << 80) - 1);
-        base_n::encode(hash, base_n::CASE_INSENSITIVE)
+        hash.as_u128().to_base_fixed_len(CASE_INSENSITIVE)
     }
 
-    pub fn compute_size_estimate(&mut self, tcx: TyCtxt<'tcx>) {
-        // Estimate the size of a codegen unit as (approximately) the number of MIR
-        // statements it corresponds to.
-        self.size_estimate = self.items.keys().map(|mi| mi.size_estimate(tcx)).sum();
+    pub fn compute_size_estimate(&mut self) {
+        // The size of a codegen unit as the sum of the sizes of the items
+        // within it.
+        self.size_estimate = self.items.values().map(|data| data.size_estimate).sum();
     }
 
-    #[inline]
     /// Should only be called if [`compute_size_estimate`] has previously been called.
     ///
     /// [`compute_size_estimate`]: Self::compute_size_estimate
+    #[inline]
     pub fn size_estimate(&self) -> usize {
         // Items are never zero-sized, so if we have items the estimate must be
         // non-zero, unless we forgot to call `compute_size_estimate` first.
@@ -355,11 +403,11 @@ impl<'tcx> CodegenUnit<'tcx> {
     pub fn items_in_deterministic_order(
         &self,
         tcx: TyCtxt<'tcx>,
-    ) -> Vec<(MonoItem<'tcx>, (Linkage, Visibility))> {
+    ) -> Vec<(MonoItem<'tcx>, MonoItemData)> {
         // The codegen tests rely on items being process in the same order as
         // they appear in the file, so for local items, we sort by node_id first
         #[derive(PartialEq, Eq, PartialOrd, Ord)]
-        pub struct ItemSortKey<'tcx>(Option<usize>, SymbolName<'tcx>);
+        struct ItemSortKey<'tcx>(Option<usize>, SymbolName<'tcx>);
 
         fn item_sort_key<'tcx>(tcx: TyCtxt<'tcx>, item: MonoItem<'tcx>) -> ItemSortKey<'tcx> {
             ItemSortKey(
@@ -370,17 +418,19 @@ impl<'tcx> CodegenUnit<'tcx> {
                             // instances into account. The others don't matter for
                             // the codegen tests and can even make item order
                             // unstable.
-                            InstanceDef::Item(def) => def.as_local().map(Idx::index),
-                            InstanceDef::VTableShim(..)
-                            | InstanceDef::ReifyShim(..)
-                            | InstanceDef::Intrinsic(..)
-                            | InstanceDef::FnPtrShim(..)
-                            | InstanceDef::Virtual(..)
-                            | InstanceDef::ClosureOnceShim { .. }
-                            | InstanceDef::DropGlue(..)
-                            | InstanceDef::CloneShim(..)
-                            | InstanceDef::ThreadLocalShim(..)
-                            | InstanceDef::FnPtrAddrShim(..) => None,
+                            InstanceKind::Item(def) => def.as_local().map(Idx::index),
+                            InstanceKind::VTableShim(..)
+                            | InstanceKind::ReifyShim(..)
+                            | InstanceKind::Intrinsic(..)
+                            | InstanceKind::FnPtrShim(..)
+                            | InstanceKind::Virtual(..)
+                            | InstanceKind::ClosureOnceShim { .. }
+                            | InstanceKind::ConstructCoroutineInClosureShim { .. }
+                            | InstanceKind::DropGlue(..)
+                            | InstanceKind::CloneShim(..)
+                            | InstanceKind::ThreadLocalShim(..)
+                            | InstanceKind::FnPtrAddrShim(..)
+                            | InstanceKind::AsyncDropGlueCtorShim(..) => None,
                         }
                     }
                     MonoItem::Static(def_id) => def_id.as_local().map(Idx::index),
@@ -390,7 +440,7 @@ impl<'tcx> CodegenUnit<'tcx> {
             )
         }
 
-        let mut items: Vec<_> = self.items().iter().map(|(&i, &l)| (i, l)).collect();
+        let mut items: Vec<_> = self.items().iter().map(|(&i, &data)| (i, data)).collect();
         items.sort_by_cached_key(|&(i, _)| item_sort_key(tcx, i));
         items
     }
@@ -400,38 +450,19 @@ impl<'tcx> CodegenUnit<'tcx> {
     }
 }
 
-impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for CodegenUnit<'tcx> {
-    fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
-        let CodegenUnit {
-            ref items,
-            name,
-            // The size estimate is not relevant to the hash
-            size_estimate: _,
-            primary: _,
-            is_code_coverage_dead_code_cgu,
-        } = *self;
+impl ToStableHashKey<StableHashingContext<'_>> for CodegenUnit<'_> {
+    type KeyType = String;
 
-        name.hash_stable(hcx, hasher);
-        is_code_coverage_dead_code_cgu.hash_stable(hcx, hasher);
-
-        let mut items: Vec<(Fingerprint, _)> = items
-            .iter()
-            .map(|(mono_item, &attrs)| {
-                let mut hasher = StableHasher::new();
-                mono_item.hash_stable(hcx, &mut hasher);
-                let mono_item_fingerprint = hasher.finish();
-                (mono_item_fingerprint, attrs)
-            })
-            .collect();
-
-        items.sort_unstable_by_key(|i| i.0);
-        items.hash_stable(hcx, hasher);
+    fn to_stable_hash_key(&self, _: &StableHashingContext<'_>) -> Self::KeyType {
+        // Codegen unit names are conceptually required to be stable across
+        // compilation session so that object file names match up.
+        self.name.to_string()
     }
 }
 
 pub struct CodegenUnitNameBuilder<'tcx> {
     tcx: TyCtxt<'tcx>,
-    cache: FxHashMap<CrateNum, String>,
+    cache: UnordMap<CrateNum, String>,
 }
 
 impl<'tcx> CodegenUnitNameBuilder<'tcx> {
@@ -501,27 +532,27 @@ impl<'tcx> CodegenUnitNameBuilder<'tcx> {
             // local crate's ID. Otherwise there can be collisions between CGUs
             // instantiating stuff for upstream crates.
             let local_crate_id = if cnum != LOCAL_CRATE {
-                let local_stable_crate_id = tcx.sess.local_stable_crate_id();
+                let local_stable_crate_id = tcx.stable_crate_id(LOCAL_CRATE);
                 format!("-in-{}.{:08x}", tcx.crate_name(LOCAL_CRATE), local_stable_crate_id)
             } else {
                 String::new()
             };
 
-            let stable_crate_id = tcx.sess.local_stable_crate_id();
+            let stable_crate_id = tcx.stable_crate_id(LOCAL_CRATE);
             format!("{}.{:08x}{}", tcx.crate_name(cnum), stable_crate_id, local_crate_id)
         });
 
-        write!(cgu_name, "{}", crate_prefix).unwrap();
+        write!(cgu_name, "{crate_prefix}").unwrap();
 
         // Add the components
         for component in components {
-            write!(cgu_name, "-{}", component).unwrap();
+            write!(cgu_name, "-{component}").unwrap();
         }
 
         if let Some(special_suffix) = special_suffix {
             // We add a dot in here so it cannot clash with anything in a regular
             // Rust identifier
-            write!(cgu_name, ".{}", special_suffix).unwrap();
+            write!(cgu_name, ".{special_suffix}").unwrap();
         }
 
         Symbol::intern(&cgu_name)

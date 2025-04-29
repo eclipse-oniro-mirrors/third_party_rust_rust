@@ -9,9 +9,7 @@
 #![warn(clippy::unwrap_used)]
 #![warn(clippy::get_unwrap)]
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 struct GetFalsePositive {
     arr: [u32; 3],
@@ -88,6 +86,7 @@ mod issue9612 {
         util();
     }
 
+    #[allow(unconditional_panic)]
     fn util() {
         let _a: u8 = 4.try_into().unwrap();
         let _a: u8 = 5.try_into().expect("");

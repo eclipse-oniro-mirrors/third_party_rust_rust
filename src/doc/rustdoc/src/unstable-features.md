@@ -200,10 +200,26 @@ To do so, the `#[doc(keyword = "...")]` attribute is used. Example:
 
 ```rust
 #![feature(rustdoc_internals)]
+#![allow(internal_features)]
 
 /// Some documentation about the keyword.
 #[doc(keyword = "keyword")]
 mod empty_mod {}
+```
+
+### Use the Rust logo as the crate logo
+
+This is for official Rust project use only.
+
+Internal Rustdoc pages like settings.html and scrape-examples-help.html show the Rust logo.
+This logo is tracked as a static resource. The attribute `#![doc(rust_logo)]` makes this same
+built-in resource act as the main logo.
+
+```rust
+#![feature(rustdoc_internals)]
+#![allow(internal_features)]
+#![doc(rust_logo)]
+//! This crate has the Rust(tm) branding on it.
 ```
 
 ## Effects of other nightly features
@@ -374,7 +390,7 @@ library, as an equivalent command-line argument is provided to `rustc` when buil
 This feature allows you to generate an index-page with a given markdown file. A good example of it
 is the [rust documentation index](https://doc.rust-lang.org/nightly/index.html).
 
-With this, you'll have a page which you can custom as much as you want at the top of your crates.
+With this, you'll have a page which you can customize as much as you want at the top of your crates.
 
 Using `index-page` option enables `enable-index-page` option as well.
 
@@ -499,6 +515,9 @@ pub fn no_documentation() {}
 
 Note that the third item is the crate root, which in this case is undocumented.
 
+If you want the JSON output to be displayed on `stdout` instead of having a file generated, you can
+use `-o -`.
+
 ### `-w`/`--output-format`: output format
 
 `--output-format json` emits documentation in the experimental
@@ -601,22 +620,6 @@ crate being documented (`foobar`) and a path to output the calls
 
 To scrape examples from test code, e.g. functions marked `#[test]`, then
 add the `--scrape-tests` flag.
-
-### `--check-cfg`: check configuration flags
-
- * Tracking issue: [#82450](https://github.com/rust-lang/rust/issues/82450)
-
-This flag accepts the same values as `rustc --check-cfg`, and uses it to check configuration flags.
-
-Using this flag looks like this:
-
-```bash
-$ rustdoc src/lib.rs -Z unstable-options \
-    --check-cfg='names()' --check-cfg='values(feature, "foo", "bar")'
-```
-
-The example above check every well known names (`target_os`, `doc`, `test`, ... via `names()`)
-and check the values of `feature`: `foo` and `bar`.
 
 ### `--generate-link-to-definition`: Generate links on types in source code
 

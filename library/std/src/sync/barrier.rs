@@ -20,7 +20,7 @@ use crate::sync::{Condvar, Mutex};
 ///     let c = Arc::clone(&barrier);
 ///     // The same messages will be printed together.
 ///     // You will NOT see any interleaving.
-///     handles.push(thread::spawn(move|| {
+///     handles.push(thread::spawn(move || {
 ///         println!("before wait");
 ///         c.wait();
 ///         println!("after wait");
@@ -81,8 +81,10 @@ impl Barrier {
     /// let barrier = Barrier::new(10);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_const_stable(feature = "const_barrier", since = "1.78.0")]
     #[must_use]
-    pub fn new(n: usize) -> Barrier {
+    #[inline]
+    pub const fn new(n: usize) -> Barrier {
         Barrier {
             lock: Mutex::new(BarrierState { count: 0, generation_id: 0 }),
             cvar: Condvar::new(),
@@ -113,7 +115,7 @@ impl Barrier {
     ///     let c = Arc::clone(&barrier);
     ///     // The same messages will be printed together.
     ///     // You will NOT see any interleaving.
-    ///     handles.push(thread::spawn(move|| {
+    ///     handles.push(thread::spawn(move || {
     ///         println!("before wait");
     ///         c.wait();
     ///         println!("after wait");
@@ -130,11 +132,8 @@ impl Barrier {
         let local_gen = lock.generation_id;
         lock.count += 1;
         if lock.count < self.num_threads {
-            // We need a while loop to guard against spurious wakeups.
-            // https://en.wikipedia.org/wiki/Spurious_wakeup
-            while local_gen == lock.generation_id {
-                lock = self.cvar.wait(lock).unwrap();
-            }
+            let _guard =
+                self.cvar.wait_while(lock, |state| local_gen == state.generation_id).unwrap();
             BarrierWaitResult(false)
         } else {
             lock.count = 0;

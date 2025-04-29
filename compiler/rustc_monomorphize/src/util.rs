@@ -1,6 +1,7 @@
-use rustc_middle::ty::{self, ClosureSizeProfileData, Instance, TyCtxt};
 use std::fs::OpenOptions;
 use std::io::prelude::*;
+
+use rustc_middle::ty::{self, ClosureSizeProfileData, Instance, TyCtxt};
 
 /// For a given closure, writes out the data for the profiling the impact of RFC 2229 on
 /// closure size into a CSV.
@@ -26,13 +27,13 @@ pub(crate) fn dump_closure_profile<'tcx>(tcx: TyCtxt<'tcx>, closure_instance: In
         let ClosureSizeProfileData { before_feature_tys, after_feature_tys } =
             typeck_results.closure_size_eval[&closure_def_id];
 
-        let before_feature_tys = tcx.subst_and_normalize_erasing_regions(
-            closure_instance.substs,
+        let before_feature_tys = tcx.instantiate_and_normalize_erasing_regions(
+            closure_instance.args,
             param_env,
             ty::EarlyBinder::bind(before_feature_tys),
         );
-        let after_feature_tys = tcx.subst_and_normalize_erasing_regions(
-            closure_instance.substs,
+        let after_feature_tys = tcx.instantiate_and_normalize_erasing_regions(
+            closure_instance.args,
             param_env,
             ty::EarlyBinder::bind(after_feature_tys),
         );

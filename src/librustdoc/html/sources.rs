@@ -1,34 +1,36 @@
-use crate::clean;
-use crate::docfs::PathError;
-use crate::error::Error;
-use crate::html::format;
-use crate::html::highlight;
-use crate::html::layout;
-use crate::html::render::Context;
-use crate::visit::DocVisitor;
-
-use askama::Template;
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc_hir::def_id::LOCAL_CRATE;
-use rustc_middle::ty::TyCtxt;
-use rustc_session::Session;
-use rustc_span::source_map::FileName;
-
 use std::cell::RefCell;
 use std::ffi::OsStr;
-use std::fmt;
-use std::fs;
 use std::ops::RangeInclusive;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::{fmt, fs};
+
+use rinja::Template;
+use rustc_data_structures::fx::{FxHashSet, FxIndexMap};
+use rustc_hir::def_id::LOCAL_CRATE;
+use rustc_middle::ty::TyCtxt;
+use rustc_session::Session;
+use rustc_span::{FileName, sym};
+use tracing::info;
+
+use crate::clean;
+use crate::clean::utils::has_doc_flag;
+use crate::docfs::PathError;
+use crate::error::Error;
+use crate::html::render::Context;
+use crate::html::{format, highlight, layout};
+use crate::visit::DocVisitor;
 
 pub(crate) fn render(cx: &mut Context<'_>, krate: &clean::Crate) -> Result<(), Error> {
     info!("emitting source files");
 
     let dst = cx.dst.join("src").join(krate.name(cx.tcx()).as_str());
     cx.shared.ensure_dir(&dst)?;
+    let crate_name = krate.name(cx.tcx());
+    let crate_name = crate_name.as_str();
 
-    let mut collector = SourceCollector { dst, cx, emitted_local_sources: FxHashSet::default() };
+    let mut collector =
+        SourceCollector { dst, cx, emitted_local_sources: FxHashSet::default(), crate_name };
     collector.visit_crate(krate);
     Ok(())
 }
@@ -37,15 +39,15 @@ pub(crate) fn collect_local_sources<'tcx>(
     tcx: TyCtxt<'tcx>,
     src_root: &Path,
     krate: &clean::Crate,
-) -> FxHashMap<PathBuf, String> {
-    let mut lsc = LocalSourcesCollector { tcx, local_sources: FxHashMap::default(), src_root };
+) -> FxIndexMap<PathBuf, String> {
+    let mut lsc = LocalSourcesCollector { tcx, local_sources: FxIndexMap::default(), src_root };
     lsc.visit_crate(krate);
     lsc.local_sources
 }
 
 struct LocalSourcesCollector<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
-    local_sources: FxHashMap<PathBuf, String>,
+    local_sources: FxIndexMap<PathBuf, String>,
     src_root: &'a Path,
 }
 
@@ -89,7 +91,9 @@ impl LocalSourcesCollector<'_, '_> {
         );
 
         let mut href = href.into_inner().to_string_lossy().into_owned();
-        if let Some(c) = href.as_bytes().last() && *c != b'/' {
+        if let Some(c) = href.as_bytes().last()
+            && *c != b'/'
+        {
             href.push('/');
         }
         let mut src_fname = p.file_name().expect("source has no filename").to_os_string();
@@ -99,7 +103,7 @@ impl LocalSourcesCollector<'_, '_> {
     }
 }
 
-impl DocVisitor for LocalSourcesCollector<'_, '_> {
+impl DocVisitor<'_> for LocalSourcesCollector<'_, '_> {
     fn visit_item(&mut self, item: &clean::Item) {
         self.add_local_source(item);
 
@@ -114,9 +118,11 @@ struct SourceCollector<'a, 'tcx> {
     /// Root destination to place all HTML output into
     dst: PathBuf,
     emitted_local_sources: FxHashSet<PathBuf>,
+
+    crate_name: &'a str,
 }
 
-impl DocVisitor for SourceCollector<'_, '_> {
+impl DocVisitor<'_> for SourceCollector<'_, '_> {
     fn visit_item(&mut self, item: &clean::Item) {
         if !self.cx.include_sources {
             return;
@@ -134,7 +140,7 @@ impl DocVisitor for SourceCollector<'_, '_> {
             let filename = span.filename(sess);
             let span = span.inner();
             let pos = sess.source_map().lookup_source_file(span.lo());
-            let file_span = span.with_lo(pos.start_pos).with_hi(pos.end_pos);
+            let file_span = span.with_lo(pos.start_pos).with_hi(pos.end_position());
             // If it turns out that we couldn't read this file, then we probably
             // can't read any of the files (generating html output from json or
             // something like that), so just don't include sources for the
@@ -143,12 +149,11 @@ impl DocVisitor for SourceCollector<'_, '_> {
             self.cx.include_sources = match self.emit_source(&filename, file_span) {
                 Ok(()) => true,
                 Err(e) => {
-                    self.cx.shared.tcx.sess.span_err(
+                    self.cx.shared.tcx.dcx().span_err(
                         span,
                         format!(
-                            "failed to render source code for `{}`: {}",
-                            filename.prefer_local(),
-                            e,
+                            "failed to render source code for `{filename}`: {e}",
+                            filename = filename.prefer_local(),
                         ),
                     );
                     false
@@ -210,28 +215,35 @@ impl SourceCollector<'_, '_> {
             },
         );
 
+        let src_fname = p.file_name().expect("source has no filename").to_os_string();
+        let mut fname = src_fname.clone();
+
         let root_path = PathBuf::from("../../").join(root_path.into_inner());
         let mut root_path = root_path.to_string_lossy();
-        if let Some(c) = root_path.as_bytes().last() && *c != b'/' {
+        if let Some(c) = root_path.as_bytes().last()
+            && *c != b'/'
+        {
             root_path += "/";
         }
+        let mut file_path = Path::new(&self.crate_name).join(&*cur.borrow());
+        file_path.push(&fname);
+        fname.push(".html");
         let mut cur = self.dst.join(cur.into_inner());
         shared.ensure_dir(&cur)?;
 
-        let src_fname = p.file_name().expect("source has no filename").to_os_string();
-        let mut fname = src_fname.clone();
-        fname.push(".html");
         cur.push(&fname);
 
         let title = format!("{} - source", src_fname.to_string_lossy());
-        let desc = format!("Source of the Rust file `{}`.", filename.prefer_remapped());
+        let desc =
+            format!("Source of the Rust file `{}`.", filename.prefer_remapped_unconditionaly());
         let page = layout::Page {
             title: &title,
-            css_class: "source",
+            css_class: "src",
             root_path: &root_path,
             static_root_path: shared.static_root_path.as_deref(),
             description: &desc,
             resource_suffix: &shared.resource_suffix,
+            rust_logo: has_doc_flag(self.cx.tcx(), LOCAL_CRATE.as_def_id(), sym::rust_logo),
         };
         let v = layout::render(
             &shared.layout,
@@ -246,7 +258,7 @@ impl SourceCollector<'_, '_> {
                     cx,
                     &root_path,
                     highlight::DecorationInfo::default(),
-                    SourceContext::Standalone,
+                    SourceContext::Standalone { file_path },
                 )
             },
             &shared.style_files,
@@ -286,9 +298,34 @@ where
     }
 }
 
-pub(crate) enum SourceContext {
-    Standalone,
-    Embedded { offset: usize, needs_expansion: bool },
+pub(crate) struct ScrapedInfo<'a> {
+    pub(crate) offset: usize,
+    pub(crate) name: &'a str,
+    pub(crate) url: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) locations: String,
+    pub(crate) needs_expansion: bool,
+}
+
+#[derive(Template)]
+#[template(path = "scraped_source.html")]
+struct ScrapedSource<'a, Code: std::fmt::Display> {
+    info: ScrapedInfo<'a>,
+    lines: RangeInclusive<usize>,
+    code_html: Code,
+}
+
+#[derive(Template)]
+#[template(path = "source.html")]
+struct Source<Code: std::fmt::Display> {
+    lines: RangeInclusive<usize>,
+    code_html: Code,
+    file_path: Option<(String, String)>,
+}
+
+pub(crate) enum SourceContext<'a> {
+    Standalone { file_path: PathBuf },
+    Embedded(ScrapedInfo<'a>),
 }
 
 /// Wrapper struct to render the source code of a file. This will do things like
@@ -300,23 +337,8 @@ pub(crate) fn print_src(
     context: &Context<'_>,
     root_path: &str,
     decoration_info: highlight::DecorationInfo,
-    source_context: SourceContext,
+    source_context: SourceContext<'_>,
 ) {
-    #[derive(Template)]
-    #[template(path = "source.html")]
-    struct Source<Code: std::fmt::Display> {
-        embedded: bool,
-        needs_expansion: bool,
-        lines: RangeInclusive<usize>,
-        code_html: Code,
-    }
-    let lines = s.lines().count();
-    let (embedded, needs_expansion, lines) = match source_context {
-        SourceContext::Standalone => (false, false, 1..=lines),
-        SourceContext::Embedded { offset, needs_expansion } => {
-            (true, needs_expansion, (1 + offset)..=(lines + offset))
-        }
-    };
     let current_href = context
         .href_from_span(clean::Span::new(file_span), false)
         .expect("only local crates should have sources emitted");
@@ -329,5 +351,24 @@ pub(crate) fn print_src(
         );
         Ok(())
     });
-    Source { embedded, needs_expansion, lines, code_html: code }.render_into(&mut writer).unwrap();
+    let lines = s.lines().count();
+    match source_context {
+        SourceContext::Standalone { file_path } => Source {
+            lines: (1..=lines),
+            code_html: code,
+            file_path: if let Some(file_name) = file_path.file_name()
+                && let Some(file_path) = file_path.parent()
+            {
+                Some((file_path.display().to_string(), file_name.display().to_string()))
+            } else {
+                None
+            },
+        }
+        .render_into(&mut writer)
+        .unwrap(),
+        SourceContext::Embedded(info) => {
+            let lines = (1 + info.offset)..=(lines + info.offset);
+            ScrapedSource { info, lines, code_html: code }.render_into(&mut writer).unwrap();
+        }
+    };
 }

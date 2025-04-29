@@ -3,8 +3,7 @@
 
 # This script computes the new "current" toolstate for the toolstate repo (not to be
 # confused with publishing the test results, which happens in `src/bootstrap/toolstate.rs`).
-# It gets called from `src/ci/publish_toolstate.sh` when a new commit lands on `master`
-# (i.e., after it passed all checks on `auto`).
+# It gets called from `src/ci/publish_toolstate.sh` at the end of an `auto` build.
 
 from __future__ import print_function
 
@@ -236,7 +235,9 @@ try:
         exit(0)
 
     cur_commit = sys.argv[1]
-    cur_datetime = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    cur_datetime = datetime.datetime.now(datetime.timezone.utc).strftime(
+        '%Y-%m-%dT%H:%M:%SZ'
+    )
     cur_commit_msg = sys.argv[2]
     save_message_to_path = sys.argv[3]
     github_token = sys.argv[4]

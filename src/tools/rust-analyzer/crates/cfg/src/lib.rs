@@ -1,7 +1,5 @@
 //! cfg defines conditional compiling options, `cfg` attribute parser and evaluator
 
-#![warn(rust_2018_idioms, unused_lifetimes, semicolon_in_expressions_from_macros)]
-
 mod cfg_expr;
 mod dnf;
 #[cfg(test)]
@@ -10,7 +8,8 @@ mod tests;
 use std::fmt;
 
 use rustc_hash::FxHashSet;
-use tt::SmolStr;
+
+use intern::Symbol;
 
 pub use cfg_expr::{CfgAtom, CfgExpr};
 pub use dnf::DnfExpr;
@@ -50,11 +49,15 @@ impl CfgOptions {
         cfg.fold(&|atom| self.enabled.contains(atom))
     }
 
-    pub fn insert_atom(&mut self, key: SmolStr) {
+    pub fn check_atom(&self, cfg: &CfgAtom) -> bool {
+        self.enabled.contains(cfg)
+    }
+
+    pub fn insert_atom(&mut self, key: Symbol) {
         self.enabled.insert(CfgAtom::Flag(key));
     }
 
-    pub fn insert_key_value(&mut self, key: SmolStr, value: SmolStr) {
+    pub fn insert_key_value(&mut self, key: Symbol, value: Symbol) {
         self.enabled.insert(CfgAtom::KeyValue { key, value });
     }
 
@@ -68,21 +71,52 @@ impl CfgOptions {
         }
     }
 
-    pub fn get_cfg_keys(&self) -> impl Iterator<Item = &SmolStr> {
-        self.enabled.iter().map(|x| match x {
+    pub fn get_cfg_keys(&self) -> impl Iterator<Item = &Symbol> {
+        self.enabled.iter().map(|it| match it {
             CfgAtom::Flag(key) => key,
             CfgAtom::KeyValue { key, .. } => key,
         })
     }
 
-    pub fn get_cfg_values<'a>(
-        &'a self,
-        cfg_key: &'a str,
-    ) -> impl Iterator<Item = &'a SmolStr> + 'a {
-        self.enabled.iter().filter_map(move |x| match x {
-            CfgAtom::KeyValue { key, value } if cfg_key == key => Some(value),
+    pub fn get_cfg_values<'a>(&'a self, cfg_key: &'a str) -> impl Iterator<Item = &'a Symbol> + 'a {
+        self.enabled.iter().filter_map(move |it| match it {
+            CfgAtom::KeyValue { key, value } if cfg_key == key.as_str() => Some(value),
             _ => None,
         })
+    }
+}
+
+impl Extend<CfgAtom> for CfgOptions {
+    fn extend<T: IntoIterator<Item = CfgAtom>>(&mut self, iter: T) {
+        iter.into_iter().for_each(|cfg_flag| _ = self.enabled.insert(cfg_flag));
+    }
+}
+
+impl IntoIterator for CfgOptions {
+    type Item = <FxHashSet<CfgAtom> as IntoIterator>::Item;
+
+    type IntoIter = <FxHashSet<CfgAtom> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        <FxHashSet<CfgAtom> as IntoIterator>::into_iter(self.enabled)
+    }
+}
+
+impl<'a> IntoIterator for &'a CfgOptions {
+    type Item = <&'a FxHashSet<CfgAtom> as IntoIterator>::Item;
+
+    type IntoIter = <&'a FxHashSet<CfgAtom> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        <&FxHashSet<CfgAtom> as IntoIterator>::into_iter(&self.enabled)
+    }
+}
+
+impl FromIterator<CfgAtom> for CfgOptions {
+    fn from_iter<T: IntoIterator<Item = CfgAtom>>(iter: T) -> Self {
+        let mut options = CfgOptions::default();
+        options.extend(iter);
+        options
     }
 }
 
@@ -98,11 +132,9 @@ impl CfgDiff {
     /// of both.
     pub fn new(enable: Vec<CfgAtom>, disable: Vec<CfgAtom>) -> Option<CfgDiff> {
         let mut occupied = FxHashSet::default();
-        for item in enable.iter().chain(disable.iter()) {
-            if !occupied.insert(item) {
-                // was present
-                return None;
-            }
+        if enable.iter().chain(disable.iter()).any(|item| !occupied.insert(item)) {
+            // was present
+            return None;
         }
 
         Some(CfgDiff { enable, disable })

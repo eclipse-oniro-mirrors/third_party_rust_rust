@@ -3,7 +3,8 @@ use core::iter::*;
 use core::mem;
 use core::num::Wrapping;
 use core::ops::Range;
-use test::{black_box, Bencher};
+
+use test::{Bencher, black_box};
 
 #[bench]
 fn bench_rposition(b: &mut Bencher) {
@@ -392,6 +393,19 @@ fn bench_skip_then_zip(b: &mut Bencher) {
 }
 
 #[bench]
+fn bench_skip_trusted_random_access(b: &mut Bencher) {
+    let v: Vec<u64> = black_box(vec![42; 10000]);
+    let mut sink = [0; 10000];
+
+    b.iter(|| {
+        for (val, idx) in v.iter().skip(8).zip(0..10000) {
+            sink[idx] += val;
+        }
+        sink
+    });
+}
+
+#[bench]
 fn bench_filter_count(b: &mut Bencher) {
     b.iter(|| (0i64..1000000).map(black_box).filter(|x| x % 3 == 0).count())
 }
@@ -473,6 +487,7 @@ fn bench_next_chunk_copied(b: &mut Bencher) {
 
 /// Exercises the TrustedRandomAccess specialization in ArrayChunks
 #[bench]
+#[allow(noop_method_call)]
 fn bench_next_chunk_trusted_random_access(b: &mut Bencher) {
     let v = vec![1u8; 1024];
 

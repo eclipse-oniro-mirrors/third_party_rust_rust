@@ -1,4 +1,3 @@
-//@run-rustfix
 #![warn(clippy::single_char_add_str)]
 #![allow(clippy::needless_raw_strings, clippy::needless_raw_string_hashes)]
 
@@ -22,6 +21,12 @@ fn main() {
     string.push('\u{0052}');
     string.push('a');
 
+    let c_ref = &'a';
+    string.push(*c_ref);
+    let c = 'a';
+    string.push(c);
+    string.push('a');
+
     get_string!().push('ö');
 
     // `insert_str` tests
@@ -41,6 +46,10 @@ fn main() {
     string.insert(Y, 'a');
     string.insert(Y, '"');
     string.insert(Y, '\'');
+
+    string.insert(0, *c_ref);
+    string.insert(0, c);
+    string.insert(0, 'a');
 
     get_string!().insert(1, '?');
 }

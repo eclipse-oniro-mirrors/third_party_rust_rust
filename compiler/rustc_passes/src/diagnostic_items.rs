@@ -10,13 +10,12 @@
 //! * Compiler internal types like `Ty` and `TyCtxt`
 
 use rustc_ast as ast;
-use rustc_hir::diagnostic_items::DiagnosticItems;
 use rustc_hir::OwnerId;
-use rustc_middle::query::LocalCrate;
-use rustc_middle::query::Providers;
+use rustc_hir::diagnostic_items::DiagnosticItems;
+use rustc_middle::query::{LocalCrate, Providers};
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::{DefId, LOCAL_CRATE};
-use rustc_span::symbol::{sym, Symbol};
+use rustc_span::symbol::{Symbol, sym};
 
 use crate::errors::DuplicateDiagnosticItemInCrate;
 
@@ -45,12 +44,12 @@ fn report_duplicate_item(
 ) {
     let orig_span = tcx.hir().span_if_local(original_def_id);
     let duplicate_span = tcx.hir().span_if_local(item_def_id);
-    tcx.sess.emit_err(DuplicateDiagnosticItemInCrate {
+    tcx.dcx().emit_err(DuplicateDiagnosticItemInCrate {
         duplicate_span,
         orig_span,
         crate_name: tcx.crate_name(item_def_id.krate),
         orig_crate_name: tcx.crate_name(original_def_id.krate),
-        different_crates: (item_def_id.krate != original_def_id.krate).then_some(()),
+        different_crates: (item_def_id.krate != original_def_id.krate),
         name,
     });
 }
@@ -91,7 +90,7 @@ fn all_diagnostic_items(tcx: TyCtxt<'_>, (): ()) -> DiagnosticItems {
     items
 }
 
-pub fn provide(providers: &mut Providers) {
+pub(crate) fn provide(providers: &mut Providers) {
     providers.diagnostic_items = diagnostic_items;
     providers.all_diagnostic_items = all_diagnostic_items;
 }

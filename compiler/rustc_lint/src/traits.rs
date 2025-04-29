@@ -1,9 +1,9 @@
-use crate::lints::{DropGlue, DropTraitConstraintsDiag};
-use crate::LateContext;
-use crate::LateLintPass;
-use crate::LintContext;
-use rustc_hir as hir;
+use rustc_hir::{self as hir, LangItem};
+use rustc_session::{declare_lint, declare_lint_pass};
 use rustc_span::symbol::sym;
+
+use crate::lints::{DropGlue, DropTraitConstraintsDiag};
+use crate::{LateContext, LateLintPass, LintContext};
 
 declare_lint! {
     /// The `drop_bounds` lint checks for generics with `std::ops::Drop` as
@@ -92,37 +92,34 @@ impl<'tcx> LateLintPass<'tcx> for DropTraitConstraints {
         let predicates = cx.tcx.explicit_predicates_of(item.owner_id);
         for &(predicate, span) in predicates.predicates {
             let ClauseKind::Trait(trait_predicate) = predicate.kind().skip_binder() else {
-                continue
+                continue;
             };
             let def_id = trait_predicate.trait_ref.def_id;
-            if cx.tcx.lang_items().drop_trait() == Some(def_id) {
-                // Explicitly allow `impl Drop`, a drop-guards-as-Voldemort-type pattern.
+            if cx.tcx.is_lang_item(def_id, LangItem::Drop) {
+                // Explicitly allow `impl Drop`, a drop-guards-as-unnameable-type pattern.
                 if trait_predicate.trait_ref.self_ty().is_impl_trait() {
                     continue;
                 }
-                let Some(def_id) = cx.tcx.get_diagnostic_item(sym::needs_drop) else {
-                    return
-                };
-                cx.emit_spanned_lint(
-                    DROP_BOUNDS,
-                    span,
-                    DropTraitConstraintsDiag { predicate, tcx: cx.tcx, def_id },
-                );
+                let Some(def_id) = cx.tcx.get_diagnostic_item(sym::needs_drop) else { return };
+                cx.emit_span_lint(DROP_BOUNDS, span, DropTraitConstraintsDiag {
+                    predicate,
+                    tcx: cx.tcx,
+                    def_id,
+                });
             }
         }
     }
 
     fn check_ty(&mut self, cx: &LateContext<'_>, ty: &'tcx hir::Ty<'tcx>) {
-        let hir::TyKind::TraitObject(bounds, _lifetime, _syntax) = &ty.kind else {
-            return
-        };
+        let hir::TyKind::TraitObject(bounds, _lifetime, _syntax) = &ty.kind else { return };
         for bound in &bounds[..] {
             let def_id = bound.trait_ref.trait_def_id();
-            if cx.tcx.lang_items().drop_trait() == def_id {
-                let Some(def_id) = cx.tcx.get_diagnostic_item(sym::needs_drop) else {
-                    return
-                };
-                cx.emit_spanned_lint(DYN_DROP, bound.span, DropGlue { tcx: cx.tcx, def_id });
+            if def_id.is_some_and(|def_id| cx.tcx.is_lang_item(def_id, LangItem::Drop))
+                // FIXME: ?Drop is not a thing.
+                && bound.modifiers != hir::TraitBoundModifier::Maybe
+            {
+                let Some(def_id) = cx.tcx.get_diagnostic_item(sym::needs_drop) else { return };
+                cx.emit_span_lint(DYN_DROP, bound.span, DropGlue { tcx: cx.tcx, def_id });
             }
         }
     }

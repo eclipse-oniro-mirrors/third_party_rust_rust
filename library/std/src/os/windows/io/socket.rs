@@ -3,14 +3,11 @@
 #![stable(feature = "io_safety", since = "1.63.0")]
 
 use super::raw::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
-use crate::fmt;
-use crate::io;
 use crate::marker::PhantomData;
-use crate::mem;
-use crate::mem::forget;
-use crate::sys;
+use crate::mem::{self, ManuallyDrop};
 #[cfg(not(target_vendor = "uwp"))]
 use crate::sys::cvt;
+use crate::{fmt, io, sys};
 
 /// A borrowed socket.
 ///
@@ -64,7 +61,7 @@ pub struct OwnedSocket {
 }
 
 impl BorrowedSocket<'_> {
-    /// Return a `BorrowedSocket` holding the given raw socket.
+    /// Returns a `BorrowedSocket` holding the given raw socket.
     ///
     /// # Safety
     ///
@@ -76,7 +73,7 @@ impl BorrowedSocket<'_> {
     #[stable(feature = "io_safety", since = "1.63.0")]
     pub const unsafe fn borrow_raw(socket: RawSocket) -> Self {
         assert!(socket != sys::c::INVALID_SOCKET as RawSocket);
-        Self { socket, _phantom: PhantomData }
+        unsafe { Self { socket, _phantom: PhantomData } }
     }
 }
 
@@ -116,7 +113,7 @@ impl BorrowedSocket<'_> {
         let mut info = unsafe { mem::zeroed::<sys::c::WSAPROTOCOL_INFOW>() };
         let result = unsafe {
             sys::c::WSADuplicateSocketW(
-                self.as_raw_socket(),
+                self.as_raw_socket() as sys::c::SOCKET,
                 sys::c::GetCurrentProcessId(),
                 &mut info,
             )
@@ -127,14 +124,14 @@ impl BorrowedSocket<'_> {
                 info.iAddressFamily,
                 info.iSocketType,
                 info.iProtocol,
-                &mut info,
+                &info,
                 0,
                 sys::c::WSA_FLAG_OVERLAPPED | sys::c::WSA_FLAG_NO_HANDLE_INHERIT,
             )
         };
 
         if socket != sys::c::INVALID_SOCKET {
-            unsafe { Ok(OwnedSocket::from_raw_socket(socket)) }
+            unsafe { Ok(OwnedSocket::from_raw_socket(socket as RawSocket)) }
         } else {
             let error = unsafe { sys::c::WSAGetLastError() };
 
@@ -147,7 +144,7 @@ impl BorrowedSocket<'_> {
                     info.iAddressFamily,
                     info.iSocketType,
                     info.iProtocol,
-                    &mut info,
+                    &info,
                     0,
                     sys::c::WSA_FLAG_OVERLAPPED,
                 )
@@ -158,7 +155,7 @@ impl BorrowedSocket<'_> {
             }
 
             unsafe {
-                let socket = OwnedSocket::from_raw_socket(socket);
+                let socket = OwnedSocket::from_raw_socket(socket as RawSocket);
                 socket.set_no_inherit()?;
                 Ok(socket)
             }
@@ -191,9 +188,7 @@ impl AsRawSocket for OwnedSocket {
 impl IntoRawSocket for OwnedSocket {
     #[inline]
     fn into_raw_socket(self) -> RawSocket {
-        let socket = self.socket;
-        forget(self);
-        socket
+        ManuallyDrop::new(self).socket
     }
 }
 
@@ -201,8 +196,10 @@ impl IntoRawSocket for OwnedSocket {
 impl FromRawSocket for OwnedSocket {
     #[inline]
     unsafe fn from_raw_socket(socket: RawSocket) -> Self {
-        debug_assert_ne!(socket, sys::c::INVALID_SOCKET as RawSocket);
-        Self { socket }
+        unsafe {
+            debug_assert_ne!(socket, sys::c::INVALID_SOCKET as RawSocket);
+            Self { socket }
+        }
     }
 }
 
@@ -211,7 +208,7 @@ impl Drop for OwnedSocket {
     #[inline]
     fn drop(&mut self) {
         unsafe {
-            let _ = sys::c::closesocket(self.socket);
+            let _ = sys::c::closesocket(self.socket as sys::c::SOCKET);
         }
     }
 }
@@ -319,6 +316,7 @@ impl AsSocket for crate::net::TcpStream {
 
 #[stable(feature = "io_safety", since = "1.63.0")]
 impl From<crate::net::TcpStream> for OwnedSocket {
+    /// Takes ownership of a [`TcpStream`](crate::net::TcpStream)'s socket.
     #[inline]
     fn from(tcp_stream: crate::net::TcpStream) -> OwnedSocket {
         unsafe { OwnedSocket::from_raw_socket(tcp_stream.into_raw_socket()) }
@@ -343,6 +341,7 @@ impl AsSocket for crate::net::TcpListener {
 
 #[stable(feature = "io_safety", since = "1.63.0")]
 impl From<crate::net::TcpListener> for OwnedSocket {
+    /// Takes ownership of a [`TcpListener`](crate::net::TcpListener)'s socket.
     #[inline]
     fn from(tcp_listener: crate::net::TcpListener) -> OwnedSocket {
         unsafe { OwnedSocket::from_raw_socket(tcp_listener.into_raw_socket()) }
@@ -367,6 +366,7 @@ impl AsSocket for crate::net::UdpSocket {
 
 #[stable(feature = "io_safety", since = "1.63.0")]
 impl From<crate::net::UdpSocket> for OwnedSocket {
+    /// Takes ownership of a [`UdpSocket`](crate::net::UdpSocket)'s underlying socket.
     #[inline]
     fn from(udp_socket: crate::net::UdpSocket) -> OwnedSocket {
         unsafe { OwnedSocket::from_raw_socket(udp_socket.into_raw_socket()) }

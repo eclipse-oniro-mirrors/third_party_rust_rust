@@ -1,27 +1,19 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
 //! This file provides API for compiler consumers.
 
 use rustc_hir::def_id::LocalDefId;
 use rustc_index::{IndexSlice, IndexVec};
-use rustc_infer::infer::TyCtxtInferExt;
 use rustc_middle::mir::{Body, Promoted};
-use rustc_middle::traits::DefiningAnchor;
 use rustc_middle::ty::TyCtxt;
-use std::rc::Rc;
 
+pub use super::constraints::OutlivesConstraint;
+pub use super::dataflow::{BorrowIndex, Borrows, calculate_borrows_out_of_scope_at_location};
+pub use super::facts::{AllFacts as PoloniusInput, RustcFacts};
+pub use super::location::{LocationTable, RichLocation};
+pub use super::nll::PoloniusOutput;
+pub use super::place_ext::PlaceExt;
+pub use super::places_conflict::{PlaceConflictBias, places_conflict};
+pub use super::region_infer::RegionInferenceContext;
 use crate::borrow_set::BorrowSet;
-
-pub use super::{
-    constraints::OutlivesConstraint,
-    dataflow::{calculate_borrows_out_of_scope_at_location, BorrowIndex, Borrows},
-    facts::{AllFacts as PoloniusInput, RustcFacts},
-    location::{LocationTable, RichLocation},
-    nll::PoloniusOutput,
-    place_ext::PlaceExt,
-    places_conflict::{places_conflict, PlaceConflictBias},
-    region_infer::RegionInferenceContext,
-};
 
 /// Options determining the output behavior of [`get_body_with_borrowck_facts`].
 ///
@@ -30,7 +22,7 @@ pub use super::{
 /// will be retrieved.
 #[derive(Debug, Copy, Clone)]
 pub enum ConsumerOptions {
-    /// Retrieve the [`Body`] along with the [`BorrowSet`](super::borrow_set::BorrowSet)
+    /// Retrieve the [`Body`] along with the [`BorrowSet`]
     /// and [`RegionInferenceContext`]. If you would like the body only, use
     /// [`TyCtxt::mir_promoted`].
     ///
@@ -71,10 +63,10 @@ pub struct BodyWithBorrowckFacts<'tcx> {
     /// The mir bodies of promoteds.
     pub promoted: IndexVec<Promoted, Body<'tcx>>,
     /// The set of borrows occurring in `body` with data about them.
-    pub borrow_set: Rc<BorrowSet<'tcx>>,
+    pub borrow_set: BorrowSet<'tcx>,
     /// Context generated during borrowck, intended to be passed to
     /// [`calculate_borrows_out_of_scope_at_location`].
-    pub region_inference_context: Rc<RegionInferenceContext<'tcx>>,
+    pub region_inference_context: RegionInferenceContext<'tcx>,
     /// The table that maps Polonius points to locations in the table.
     /// Populated when using [`ConsumerOptions::PoloniusInputFacts`]
     /// or [`ConsumerOptions::PoloniusOutputFacts`].
@@ -85,7 +77,7 @@ pub struct BodyWithBorrowckFacts<'tcx> {
     pub input_facts: Option<Box<PoloniusInput>>,
     /// Polonius output facts. Populated when using
     /// [`ConsumerOptions::PoloniusOutputFacts`].
-    pub output_facts: Option<Rc<PoloniusOutput>>,
+    pub output_facts: Option<Box<PoloniusOutput>>,
 }
 
 /// This function computes borrowck facts for the given body. The [`ConsumerOptions`]
@@ -108,8 +100,7 @@ pub fn get_body_with_borrowck_facts(
     options: ConsumerOptions,
 ) -> BodyWithBorrowckFacts<'_> {
     let (input_body, promoted) = tcx.mir_promoted(def);
-    let infcx = tcx.infer_ctxt().with_opaque_type_inference(DefiningAnchor::Bind(def)).build();
     let input_body: &Body<'_> = &input_body.borrow();
     let promoted: &IndexSlice<_, _> = &promoted.borrow();
-    *super::do_mir_borrowck(&infcx, input_body, promoted, Some(options)).1.unwrap()
+    *super::do_mir_borrowck(tcx, input_body, promoted, Some(options)).1.unwrap()
 }

@@ -1,5 +1,4 @@
 #![warn(clippy::unused_async)]
-#![feature(async_fn_in_trait)]
 #![allow(incomplete_features)]
 
 use std::future::Future;
@@ -11,6 +10,7 @@ mod issue10800 {
     use std::future::ready;
 
     async fn async_block_await() {
+        //~^ ERROR: unused `async` for function with no await statements
         async {
             ready(()).await;
         };
@@ -37,7 +37,42 @@ mod issue10459 {
     }
 }
 
+mod issue9695 {
+    use std::future::Future;
+
+    async fn f() {}
+    async fn f2() {}
+    async fn f3() {}
+    //~^ ERROR: unused `async` for function with no await statements
+
+    fn needs_async_fn<F: Future<Output = ()>>(_: fn() -> F) {}
+
+    fn test() {
+        let x = f;
+        needs_async_fn(x); // async needed in f
+        needs_async_fn(f2); // async needed in f2
+        f3(); // async not needed in f3
+    }
+}
+
+mod issue13466 {
+    use std::future::Future;
+
+    struct Wrap<F>(F);
+    impl<F> From<F> for Wrap<F> {
+        fn from(f: F) -> Self {
+            Self(f)
+        }
+    }
+    fn takes_fut<F: Fn() -> Fut, Fut: Future>(_: Wrap<F>) {}
+    async fn unused_async() {}
+    fn fp() {
+        takes_fut(unused_async.into());
+    }
+}
+
 async fn foo() -> i32 {
+    //~^ ERROR: unused `async` for function with no await statements
     4
 }
 
@@ -49,6 +84,7 @@ struct S;
 
 impl S {
     async fn unused(&self) -> i32 {
+        //~^ ERROR: unused `async` for function with no await statements
         1
     }
 

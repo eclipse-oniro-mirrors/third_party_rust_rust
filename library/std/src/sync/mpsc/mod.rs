@@ -51,7 +51,7 @@
 //!
 //! // Create a simple streaming channel
 //! let (tx, rx) = channel();
-//! thread::spawn(move|| {
+//! thread::spawn(move || {
 //!     tx.send(10).unwrap();
 //! });
 //! assert_eq!(rx.recv().unwrap(), 10);
@@ -69,7 +69,7 @@
 //! let (tx, rx) = channel();
 //! for i in 0..10 {
 //!     let tx = tx.clone();
-//!     thread::spawn(move|| {
+//!     thread::spawn(move || {
 //!         tx.send(i).unwrap();
 //!     });
 //! }
@@ -99,7 +99,7 @@
 //! use std::sync::mpsc::sync_channel;
 //!
 //! let (tx, rx) = sync_channel::<i32>(0);
-//! thread::spawn(move|| {
+//! thread::spawn(move || {
 //!     // This will wait for the parent thread to start receiving
 //!     tx.send(53).unwrap();
 //! });
@@ -137,10 +137,10 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(all(test, not(any(target_os = "emscripten", target_os = "wasi"))))]
 mod tests;
 
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(all(test, not(any(target_os = "emscripten", target_os = "wasi"))))]
 mod sync_tests;
 
 // MPSC channels are built as a wrapper around MPMC channels, which
@@ -148,10 +148,9 @@ mod sync_tests;
 // not exposed publicly, but if you are curious about the implementation,
 // that's where everything is.
 
-use crate::error;
-use crate::fmt;
 use crate::sync::mpmc;
 use crate::time::{Duration, Instant};
+use crate::{error, fmt};
 
 /// The receiving half of Rust's [`channel`] (or [`sync_channel`]) type.
 /// This half can only be owned by one thread.
@@ -303,12 +302,11 @@ pub struct IntoIter<T> {
     rx: Receiver<T>,
 }
 
-/// The sending-half of Rust's asynchronous [`channel`] type. This half can only be
-/// owned by one thread, but it can be cloned to send to other threads.
+/// The sending-half of Rust's asynchronous [`channel`] type.
 ///
 /// Messages can be sent through this channel with [`send`].
 ///
-/// Note: all senders (the original and the clones) need to be dropped for the receiver
+/// Note: all senders (the original and its clones) need to be dropped for the receiver
 /// to stop blocking to receive messages with [`Receiver::recv`].
 ///
 /// [`send`]: Sender::send
@@ -511,7 +509,7 @@ pub enum TrySendError<T> {
 /// let (sender, receiver) = channel();
 ///
 /// // Spawn off an expensive computation
-/// thread::spawn(move|| {
+/// thread::spawn(move || {
 /// #   fn expensive_computation() {}
 ///     sender.send(expensive_computation()).unwrap();
 /// });
@@ -562,7 +560,7 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
 /// // this returns immediately
 /// sender.send(1).unwrap();
 ///
-/// thread::spawn(move|| {
+/// thread::spawn(move || {
 ///     // this will block until the previous message has been received
 ///     sender.send(2).unwrap();
 /// });
@@ -625,11 +623,6 @@ impl<T> Clone for Sender<T> {
     fn clone(&self) -> Sender<T> {
         Sender { inner: self.inner.clone() }
     }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<T> Drop for Sender<T> {
-    fn drop(&mut self) {}
 }
 
 #[stable(feature = "mpsc_debug", since = "1.8.0")]
@@ -754,11 +747,6 @@ impl<T> Clone for SyncSender<T> {
     fn clone(&self) -> SyncSender<T> {
         SyncSender { inner: self.inner.clone() }
     }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<T> Drop for SyncSender<T> {
-    fn drop(&mut self) {}
 }
 
 #[stable(feature = "mpsc_debug", since = "1.8.0")]
@@ -1095,11 +1083,6 @@ impl<T> IntoIterator for Receiver<T> {
     fn into_iter(self) -> IntoIter<T> {
         IntoIter { rx: self }
     }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<T> Drop for Receiver<T> {
-    fn drop(&mut self) {}
 }
 
 #[stable(feature = "mpsc_debug", since = "1.8.0")]

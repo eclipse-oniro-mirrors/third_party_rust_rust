@@ -1,8 +1,10 @@
-use crate::ptr::P;
-use crate::Expr;
 use rustc_data_structures::fx::FxHashMap;
-use rustc_span::symbol::{Ident, Symbol};
+use rustc_macros::{Decodable, Encodable};
 use rustc_span::Span;
+use rustc_span::symbol::{Ident, Symbol};
+
+use crate::Expr;
+use crate::ptr::P;
 
 // Definitions:
 //
@@ -66,12 +68,6 @@ pub struct FormatArguments {
     num_explicit_args: usize,
     names: FxHashMap<Symbol, usize>,
 }
-
-// FIXME: Rustdoc has trouble proving Send/Sync for this. See #106930.
-#[cfg(parallel_compiler)]
-unsafe impl Sync for FormatArguments {}
-#[cfg(parallel_compiler)]
-unsafe impl Send for FormatArguments {}
 
 impl FormatArguments {
     pub fn new() -> Self {

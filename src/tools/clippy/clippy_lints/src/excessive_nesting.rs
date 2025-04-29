@@ -1,12 +1,12 @@
-use clippy_utils::{diagnostics::span_lint_and_help, source::snippet};
-use rustc_ast::{
-    node_id::NodeSet,
-    visit::{walk_block, walk_item, Visitor},
-    Block, Crate, Inline, Item, ItemKind, ModKind, NodeId,
-};
+use clippy_config::Conf;
+use clippy_utils::diagnostics::span_lint_and_help;
+use clippy_utils::source::snippet;
+use rustc_ast::node_id::NodeSet;
+use rustc_ast::visit::{Visitor, walk_block, walk_item};
+use rustc_ast::{Block, Crate, Inline, Item, ItemKind, ModKind, NodeId};
 use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
-use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_session::impl_lint_pass;
 use rustc_span::Span;
 
 declare_clippy_lint! {
@@ -57,20 +57,26 @@ declare_clippy_lint! {
     /// // lib.rs
     /// pub mod a;
     /// ```
-    #[clippy::version = "1.70.0"]
+    #[clippy::version = "1.72.0"]
     pub EXCESSIVE_NESTING,
     complexity,
     "checks for blocks nested beyond a certain threshold"
 }
 impl_lint_pass!(ExcessiveNesting => [EXCESSIVE_NESTING]);
 
-#[derive(Clone)]
 pub struct ExcessiveNesting {
     pub excessive_nesting_threshold: u64,
     pub nodes: NodeSet,
 }
 
 impl ExcessiveNesting {
+    pub fn new(conf: &'static Conf) -> Self {
+        Self {
+            excessive_nesting_threshold: conf.excessive_nesting_threshold,
+            nodes: NodeSet::default(),
+        }
+    }
+
     pub fn check_node_id(&self, cx: &EarlyContext<'_>, span: Span, node_id: NodeId) {
         if self.nodes.contains(&node_id) {
             span_lint_and_help(
@@ -129,7 +135,7 @@ impl NestingVisitor<'_, '_> {
     }
 }
 
-impl<'conf, 'cx> Visitor<'_> for NestingVisitor<'conf, 'cx> {
+impl Visitor<'_> for NestingVisitor<'_, '_> {
     fn visit_block(&mut self, block: &Block) {
         if block.span.from_expansion() {
             return;

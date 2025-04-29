@@ -48,7 +48,7 @@ mod as_keyword {}
 
 #[doc(keyword = "break")]
 //
-/// Exit early from a loop.
+/// Exit early from a loop or labelled block.
 ///
 /// When `break` is encountered, execution of the associated loop body is
 /// immediately terminated.
@@ -155,7 +155,7 @@ mod break_keyword {}
 /// const WORDS: &str = "hello convenience!";
 /// ```
 ///
-/// `const` items looks remarkably similar to `static` items, which introduces some confusion as
+/// `const` items look remarkably similar to `static` items, which introduces some confusion as
 /// to which one should be used at which times. To put it simply, constants are inlined wherever
 /// they're used, making using them identical to simply replacing the name of the `const` with its
 /// value. Static variables, on the other hand, point to a single location in memory, which all
@@ -1175,7 +1175,7 @@ mod ref_keyword {}
 
 #[doc(keyword = "return")]
 //
-/// Return a value from a function.
+/// Returns a value from a function.
 ///
 /// A `return` marks the end of an execution path in a function:
 ///
@@ -1820,7 +1820,7 @@ mod true_keyword {}
 
 #[doc(keyword = "type")]
 //
-/// Define an alias for an existing type.
+/// Define an [alias] for an existing type.
 ///
 /// The syntax is `type Name = ExistingType;`.
 ///
@@ -1836,6 +1836,13 @@ mod true_keyword {}
 /// let k: Kilograms = 3;
 ///
 /// assert_eq!(m, k);
+/// ```
+///
+/// A type can be generic:
+///
+/// ```rust
+/// # use std::sync::{Arc, Mutex};
+/// type ArcMutex<T> = Arc<Mutex<T>>;
 /// ```
 ///
 /// In traits, `type` is used to declare an [associated type]:
@@ -1860,6 +1867,7 @@ mod true_keyword {}
 ///
 /// [`trait`]: keyword.trait.html
 /// [associated type]: ../reference/items/associated-items.html#associated-types
+/// [alias]: ../reference/items/type-aliases.html
 mod type_keyword {}
 
 #[doc(keyword = "unsafe")]
@@ -2138,10 +2146,13 @@ mod unsafe_keyword {}
 
 #[doc(keyword = "use")]
 //
-/// Import or rename items from other crates or modules.
+/// Import or rename items from other crates or modules, or specify precise capturing
+/// with `use<..>`.
 ///
-/// Usually a `use` keyword is used to shorten the path required to refer to a module item.
-/// The keyword may appear in modules, blocks and even functions, usually at the top.
+/// ## Importing items
+///
+/// The `use` keyword is employed to shorten the path required to refer to a module item.
+/// The keyword may appear in modules, blocks, and even functions, typically at the top.
 ///
 /// The most basic usage of the keyword is `use path::to::item;`,
 /// though a number of convenient shortcuts are supported:
@@ -2182,19 +2193,48 @@ mod unsafe_keyword {}
 /// // Compiles.
 /// let _ = VariantA;
 ///
-/// // Does not compile !
+/// // Does not compile!
 /// let n = new();
 /// ```
 ///
-/// For more information on `use` and paths in general, see the [Reference].
+/// For more information on `use` and paths in general, see the [Reference][ref-use-decls].
 ///
 /// The differences about paths and the `use` keyword between the 2015 and 2018 editions
-/// can also be found in the [Reference].
+/// can also be found in the [Reference][ref-use-decls].
+///
+/// ## Precise capturing
+///
+/// The `use<..>` syntax is used within certain `impl Trait` bounds to control which generic
+/// parameters are captured. This is important for return-position `impl Trait` (RPIT) types,
+/// as it affects borrow checking by controlling which generic parameters can be used in the
+/// hidden type.
+///
+/// For example, the following function demonstrates an error without precise capturing in
+/// Rust 2021 and earlier editions:
+///
+/// ```rust,compile_fail,edition2021
+/// fn f(x: &()) -> impl Sized { x }
+/// ```
+///
+/// By using `use<'_>` for precise capturing, it can be resolved:
+///
+/// ```rust
+/// fn f(x: &()) -> impl Sized + use<'_> { x }
+/// ```
+///
+/// This syntax specifies that the elided lifetime be captured and therefore available for
+/// use in the hidden type.
+///
+/// In Rust 2024, opaque types automatically capture all lifetime parameters in scope.
+/// `use<..>` syntax serves as an important way of opting-out of that default.
+///
+/// For more details about precise capturing, see the [Reference][ref-impl-trait].
 ///
 /// [`crate`]: keyword.crate.html
 /// [`self`]: keyword.self.html
 /// [`super`]: keyword.super.html
-/// [Reference]: ../reference/items/use-declarations.html
+/// [ref-use-decls]: ../reference/items/use-declarations.html
+/// [ref-impl-trait]: ../reference/types/impl-trait.html
 mod use_keyword {}
 
 #[doc(keyword = "where")]
@@ -2302,7 +2342,7 @@ mod where_keyword {}
 #[doc(alias = "promise")]
 #[doc(keyword = "async")]
 //
-/// Return a [`Future`] instead of blocking the current thread.
+/// Returns a [`Future`] instead of blocking the current thread.
 ///
 /// Use `async` in front of `fn`, `closure`, or a `block` to turn the marked code into a `Future`.
 /// As such the code will not be run immediately, but will only be evaluated when the returned
@@ -2341,12 +2381,13 @@ mod async_keyword {}
 /// [`async`]: ../std/keyword.async.html
 mod await_keyword {}
 
+// FIXME(dyn_compat_renaming): Update URL and link text.
 #[doc(keyword = "dyn")]
 //
 /// `dyn` is a prefix of a [trait object]'s type.
 ///
 /// The `dyn` keyword is used to highlight that calls to methods on the associated `Trait`
-/// are [dynamically dispatched]. To use the trait this way, it must be 'object safe'.
+/// are [dynamically dispatched]. To use the trait this way, it must be 'dyn-compatible'[^1].
 ///
 /// Unlike generic parameters or `impl Trait`, the compiler does not know the concrete type that
 /// is being passed. That is, the type has been [erased].
@@ -2374,6 +2415,7 @@ mod await_keyword {}
 /// [ref-trait-obj]: ../reference/types/trait-object.html
 /// [ref-obj-safety]: ../reference/items/traits.html#object-safety
 /// [erased]: https://en.wikipedia.org/wiki/Type_erasure
+/// [^1]: Formerly known as 'object safe'.
 mod dyn_keyword {}
 
 #[doc(keyword = "union")]

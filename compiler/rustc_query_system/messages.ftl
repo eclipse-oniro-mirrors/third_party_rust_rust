@@ -1,4 +1,5 @@
 query_system_cycle = cycle detected when {$stack_bottom}
+    .note = see https://rustc-dev-guide.rust-lang.org/overview.html#queries and https://rustc-dev-guide.rust-lang.org/query.html for more information
 
 query_system_cycle_recursive_trait_alias = trait aliases cannot be recursive
 
@@ -13,8 +14,6 @@ query_system_cycle_stack_multiple = ...which again requires {$stack_bottom}, com
 query_system_cycle_stack_single = ...which immediately requires {$stack_bottom} again
 
 query_system_cycle_usage = cycle used when {$usage}
-
-query_system_cycle_which_requires = ...which requires {$desc}...
 
 query_system_increment_compilation = internal compiler error: encountered incremental compilation error with {$dep_node}
     .help = This is a known issue with the compiler. Run {$run_cmd} to allow your project to compile

@@ -2,7 +2,7 @@ use super::utils::clone_or_copy_needed;
 use clippy_utils::diagnostics::span_lint;
 use clippy_utils::ty::is_copy;
 use clippy_utils::usage::mutated_variables;
-use clippy_utils::visitors::{for_each_expr, Descend};
+use clippy_utils::visitors::{Descend, for_each_expr_without_closures};
 use clippy_utils::{is_res_lang_ctor, is_trait_method, path_res, path_to_local_id};
 use core::ops::ControlFlow;
 use rustc_hir as hir;
@@ -11,8 +11,7 @@ use rustc_lint::LateContext;
 use rustc_middle::ty;
 use rustc_span::sym;
 
-use super::UNNECESSARY_FILTER_MAP;
-use super::UNNECESSARY_FIND_MAP;
+use super::{UNNECESSARY_FILTER_MAP, UNNECESSARY_FIND_MAP};
 
 pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'tcx>, arg: &'tcx hir::Expr<'tcx>, name: &str) {
     if !is_trait_method(cx, expr, sym::Iterator) {
@@ -27,7 +26,7 @@ pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'tcx>, a
 
         let (mut found_mapping, mut found_filtering) = check_expression(cx, arg_id, body.value);
 
-        let _: Option<!> = for_each_expr(body.value, |e| {
+        let _: Option<!> = for_each_expr_without_closures(body.value, |e| {
             if let hir::ExprKind::Ret(Some(e)) = &e.kind {
                 let (found_mapping_res, found_filtering_res) = check_expression(cx, arg_id, e);
                 found_mapping |= found_mapping_res;
@@ -61,7 +60,7 @@ pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'tcx>, a
                 UNNECESSARY_FIND_MAP
             },
             expr.span,
-            &format!("this `.{name}` can be written more simply using `.{sugg}`"),
+            format!("this `.{name}` can be written more simply using `.{sugg}`"),
         );
     }
 }
@@ -77,6 +76,16 @@ fn check_expression<'tcx>(cx: &LateContext<'tcx>, arg_id: hir::HirId, expr: &'tc
                 return (true, false);
             }
             (true, true)
+        },
+        hir::ExprKind::MethodCall(segment, recv, [arg], _) => {
+            if segment.ident.name == sym!(then_some)
+                && cx.typeck_results().expr_ty(recv).is_bool()
+                && path_to_local_id(arg, arg_id)
+            {
+                (false, true)
+            } else {
+                (true, true)
+            }
         },
         hir::ExprKind::Block(block, _) => block
             .expr

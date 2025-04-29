@@ -44,7 +44,7 @@
 //! the most suitable spot to implement it, and then just let the
 //! other fns cycle around. The handoff works like this:
 //!
-//! - `into(place)` -> fallback is to create a rvalue with `as_rvalue` and assign it to `place`
+//! - `into(place)` -> fallback is to create an rvalue with `as_rvalue` and assign it to `place`
 //! - `as_rvalue` -> fallback is to create an Operand with `as_operand` and use `Rvalue::use`
 //! - `as_operand` -> either invokes `as_constant` or `as_temp`
 //! - `as_constant` -> (no fallback)
@@ -62,9 +62,9 @@
 
 pub(crate) mod as_constant;
 mod as_operand;
-pub mod as_place;
+pub(crate) mod as_place;
 mod as_rvalue;
 mod as_temp;
-pub mod category;
+pub(crate) mod category;
 mod into;
 mod stmt;

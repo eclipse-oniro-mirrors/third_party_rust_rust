@@ -1,13 +1,11 @@
-// revisions: OPT DBG
-// [OPT] compile-flags: -C opt-level=3 -C no-prepopulate-passes
-// [DBG] compile-flags: -C opt-level=0 -C no-prepopulate-passes
-// only-64bit (so I don't need to worry about usize)
-// min-llvm-version: 15.0 # this test assumes `ptr`s
-
+//@ revisions: OPT DBG
+//@ [OPT] compile-flags: -C opt-level=3 -C no-prepopulate-passes
+//@ [DBG] compile-flags: -C opt-level=0 -C no-prepopulate-passes
+//@ only-64bit (so I don't need to worry about usize)
 #![crate_type = "lib"]
 
 use std::mem::transmute;
-use std::num::NonZeroU32;
+use std::num::NonZero;
 
 #[repr(u8)]
 pub enum SmallEnum {
@@ -131,7 +129,7 @@ pub unsafe fn check_enum_to_char(x: Minus100ToPlus100) -> char {
 
 // CHECK-LABEL: @check_swap_pair(
 #[no_mangle]
-pub unsafe fn check_swap_pair(x: (char, NonZeroU32)) -> (NonZeroU32, char) {
+pub unsafe fn check_swap_pair(x: (char, NonZero<u32>)) -> (NonZero<u32>, char) {
     // OPT: %0 = icmp ule i32 %x.0, 1114111
     // OPT: call void @llvm.assume(i1 %0)
     // OPT: %1 = icmp uge i32 %x.0, 1
@@ -169,16 +167,16 @@ pub unsafe fn check_bool_from_ordering(x: std::cmp::Ordering) -> bool {
 // CHECK-LABEL: @check_bool_to_ordering(
 #[no_mangle]
 pub unsafe fn check_bool_to_ordering(x: bool) -> std::cmp::Ordering {
-    // CHECK: %0 = zext i1 %x to i8
-    // OPT: %1 = icmp ule i8 %0, 1
-    // OPT: call void @llvm.assume(i1 %1)
-    // OPT: %2 = icmp uge i8 %0, -1
-    // OPT: %3 = icmp ule i8 %0, 1
-    // OPT: %4 = or i1 %2, %3
-    // OPT: call void @llvm.assume(i1 %4)
+    // CHECK: %_0 = zext i1 %x to i8
+    // OPT: %0 = icmp ule i8 %_0, 1
+    // OPT: call void @llvm.assume(i1 %0)
+    // OPT: %1 = icmp uge i8 %_0, -1
+    // OPT: %2 = icmp ule i8 %_0, 1
+    // OPT: %3 = or i1 %1, %2
+    // OPT: call void @llvm.assume(i1 %3)
     // DBG-NOT: icmp
     // DBG-NOT: assume
-    // CHECK: ret i8 %0
+    // CHECK: ret i8 %_0
 
     transmute(x)
 }

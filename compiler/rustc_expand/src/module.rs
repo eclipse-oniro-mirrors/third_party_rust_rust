@@ -1,19 +1,20 @@
+use std::iter::once;
+use std::path::{self, Path, PathBuf};
+
+use rustc_ast::ptr::P;
+use rustc_ast::{AttrVec, Attribute, Inline, Item, ModSpans, token};
+use rustc_errors::{Diag, ErrorGuaranteed};
+use rustc_parse::{new_parser_from_file, unwrap_or_emit_fatal, validate_attr};
+use rustc_session::Session;
+use rustc_session::parse::ParseSess;
+use rustc_span::Span;
+use rustc_span::symbol::{Ident, sym};
+use thin_vec::ThinVec;
+
 use crate::base::ModuleData;
 use crate::errors::{
     ModuleCircular, ModuleFileNotFound, ModuleInBlock, ModuleInBlockName, ModuleMultipleCandidates,
 };
-use rustc_ast::ptr::P;
-use rustc_ast::{token, AttrVec, Attribute, Inline, Item, ModSpans};
-use rustc_errors::{DiagnosticBuilder, ErrorGuaranteed};
-use rustc_parse::new_parser_from_file;
-use rustc_parse::validate_attr;
-use rustc_session::parse::ParseSess;
-use rustc_session::Session;
-use rustc_span::symbol::{sym, Ident};
-use rustc_span::Span;
-use std::iter::once;
-use std::path::{self, Path, PathBuf};
-use thin_vec::ThinVec;
 
 #[derive(Copy, Clone)]
 pub enum DirOwnership {
@@ -43,7 +44,7 @@ pub enum ModError<'a> {
     ModInBlock(Option<Ident>),
     FileNotFound(Ident, PathBuf, PathBuf),
     MultipleCandidates(Ident, PathBuf, PathBuf),
-    ParserError(DiagnosticBuilder<'a, ErrorGuaranteed>),
+    ParserError(Diag<'a>),
 }
 
 pub(crate) fn parse_external_mod(
@@ -57,16 +58,17 @@ pub(crate) fn parse_external_mod(
     // We bail on the first error, but that error does not cause a fatal error... (1)
     let result: Result<_, ModError<'_>> = try {
         // Extract the file path and the new ownership.
-        let mp = mod_file_path(sess, ident, &attrs, &module.dir_path, dir_ownership)?;
+        let mp = mod_file_path(sess, ident, attrs, &module.dir_path, dir_ownership)?;
         dir_ownership = mp.dir_ownership;
 
         // Ensure file paths are acyclic.
         if let Some(pos) = module.file_path_stack.iter().position(|p| p == &mp.file_path) {
-            Err(ModError::CircularInclusion(module.file_path_stack[pos..].to_vec()))?;
+            do yeet ModError::CircularInclusion(module.file_path_stack[pos..].to_vec());
         }
 
         // Actually parse the external file as a module.
-        let mut parser = new_parser_from_file(&sess.parse_sess, &mp.file_path, Some(span));
+        let mut parser =
+            unwrap_or_emit_fatal(new_parser_from_file(&sess.psess, &mp.file_path, Some(span)));
         let (inner_attrs, items, inner_span) =
             parser.parse_mod(&token::Eof).map_err(|err| ModError::ParserError(err))?;
         attrs.extend(inner_attrs);
@@ -91,7 +93,9 @@ pub(crate) fn mod_dir_path(
     inline: Inline,
 ) -> (PathBuf, DirOwnership) {
     match inline {
-        Inline::Yes if let Some(file_path) = mod_file_path_from_attr(sess, attrs, &module.dir_path) => {
+        Inline::Yes
+            if let Some(file_path) = mod_file_path_from_attr(sess, attrs, &module.dir_path) =>
+        {
             // For inline modules file path from `#[path]` is actually the directory path
             // for historical reasons, so we don't pop the last segment here.
             (file_path, DirOwnership::Owned { relative: None })
@@ -117,7 +121,7 @@ pub(crate) fn mod_dir_path(
         Inline::No => {
             // FIXME: This is a subset of `parse_external_mod` without actual parsing,
             // check whether the logic for unloaded, loaded and inline modules can be unified.
-            let file_path = mod_file_path(sess, ident, &attrs, &module.dir_path, dir_ownership)
+            let file_path = mod_file_path(sess, ident, attrs, &module.dir_path, dir_ownership)
                 .map(|mp| {
                     dir_ownership = mp.dir_ownership;
                     mp.file_path
@@ -155,7 +159,7 @@ fn mod_file_path<'a>(
         DirOwnership::Owned { relative } => relative,
         DirOwnership::UnownedViaBlock => None,
     };
-    let result = default_submod_path(&sess.parse_sess, ident, relative, dir_path);
+    let result = default_submod_path(&sess.psess, ident, relative, dir_path);
     match dir_ownership {
         DirOwnership::Owned { .. } => result,
         DirOwnership::UnownedViaBlock => Err(ModError::ModInBlock(match result {
@@ -167,7 +171,7 @@ fn mod_file_path<'a>(
 
 /// Derive a submodule path from the first found `#[path = "path_string"]`.
 /// The provided `dir_path` is joined with the `path_string`.
-fn mod_file_path_from_attr(
+pub(crate) fn mod_file_path_from_attr(
     sess: &Session,
     attrs: &[Attribute],
     dir_path: &Path,
@@ -183,11 +187,7 @@ fn mod_file_path_from_attr(
         // complexity). Usually bad forms are checked in AstValidator (via
         // `check_builtin_attribute`), but by the time that runs the macro
         // is expanded, and it doesn't give an error.
-        validate_attr::emit_fatal_malformed_builtin_attribute(
-            &sess.parse_sess,
-            first_path,
-            sym::path,
-        );
+        validate_attr::emit_fatal_malformed_builtin_attribute(&sess.psess, first_path, sym::path);
     };
 
     let path_str = path_sym.as_str();
@@ -205,7 +205,7 @@ fn mod_file_path_from_attr(
 /// Returns a path to a module.
 // Public for rustfmt usage.
 pub fn default_submod_path<'a>(
-    sess: &'a ParseSess,
+    psess: &'a ParseSess,
     ident: Ident,
     relative: Option<Ident>,
     dir_path: &Path,
@@ -227,8 +227,8 @@ pub fn default_submod_path<'a>(
         format!("{}{}{}mod.rs", relative_prefix, ident.name, path::MAIN_SEPARATOR);
     let default_path = dir_path.join(&default_path_str);
     let secondary_path = dir_path.join(&secondary_path_str);
-    let default_exists = sess.source_map().file_exists(&default_path);
-    let secondary_exists = sess.source_map().file_exists(&secondary_path);
+    let default_exists = psess.source_map().file_exists(&default_path);
+    let secondary_exists = psess.source_map().file_exists(&secondary_path);
 
     match (default_exists, secondary_exists) {
         (true, false) => Ok(ModulePathSuccess {
@@ -258,14 +258,14 @@ impl ModError<'_> {
 
                 let modules = paths.join(" -> ");
 
-                sess.emit_err(ModuleCircular { span, modules })
+                sess.dcx().emit_err(ModuleCircular { span, modules })
             }
-            ModError::ModInBlock(ident) => sess.emit_err(ModuleInBlock {
+            ModError::ModInBlock(ident) => sess.dcx().emit_err(ModuleInBlock {
                 span,
                 name: ident.map(|name| ModuleInBlockName { span, name }),
             }),
             ModError::FileNotFound(name, default_path, secondary_path) => {
-                sess.emit_err(ModuleFileNotFound {
+                sess.dcx().emit_err(ModuleFileNotFound {
                     span,
                     name,
                     default_path: default_path.display().to_string(),
@@ -273,14 +273,14 @@ impl ModError<'_> {
                 })
             }
             ModError::MultipleCandidates(name, default_path, secondary_path) => {
-                sess.emit_err(ModuleMultipleCandidates {
+                sess.dcx().emit_err(ModuleMultipleCandidates {
                     span,
                     name,
                     default_path: default_path.display().to_string(),
                     secondary_path: secondary_path.display().to_string(),
                 })
             }
-            ModError::ParserError(mut err) => err.emit(),
+            ModError::ParserError(err) => err.emit(),
         }
     }
 }

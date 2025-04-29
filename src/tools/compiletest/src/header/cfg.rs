@@ -1,6 +1,7 @@
+use std::collections::HashSet;
+
 use crate::common::{CompareMode, Config, Debugger};
 use crate::header::IgnoreDecision;
-use std::collections::HashSet;
 
 const EXTRA_ARCHS: &[&str] = &["spirv"];
 
@@ -58,7 +59,7 @@ pub(super) fn parse_cfg_name_directive<'a>(
 
     // Some of the matchers might be "" depending on what the target information is. To avoid
     // problems we outright reject empty directives.
-    if name == "" {
+    if name.is_empty() {
         return ParsedNameDirective::not_a_directive();
     }
 
@@ -112,7 +113,7 @@ pub(super) fn parse_cfg_name_directive<'a>(
             (config.target == "wasm32-unknown-unknown").then_some("emscripten"),
         ],
         allowed_names: &target_cfgs.all_oses,
-        message: "when the operative system is {name}"
+        message: "when the operating system is {name}"
     }
     condition! {
         name: &target_cfg.env,
@@ -122,7 +123,7 @@ pub(super) fn parse_cfg_name_directive<'a>(
     condition! {
         name: &target_cfg.os_and_env(),
         allowed_names: &target_cfgs.all_oses_and_envs,
-        message: "when the operative system and target environment are {name}"
+        message: "when the operating system and target environment are {name}"
     }
     condition! {
         name: &target_cfg.abi,
@@ -146,8 +147,7 @@ pub(super) fn parse_cfg_name_directive<'a>(
     }
 
     // `wasm32-bare` is an alias to refer to just wasm32-unknown-unknown
-    // (in contrast to `wasm32` which also matches non-bare targets like
-    // asmjs-unknown-emscripten).
+    // (in contrast to `wasm32` which also matches non-bare targets)
     condition! {
         name: "wasm32-bare",
         condition: config.target == "wasm32-unknown-unknown",
@@ -155,14 +155,21 @@ pub(super) fn parse_cfg_name_directive<'a>(
     }
 
     condition! {
-        name: "asmjs",
-        condition: config.target.starts_with("asmjs"),
-        message: "when the architecture is asm.js",
-    }
-    condition! {
         name: "thumb",
         condition: config.target.starts_with("thumb"),
         message: "when the architecture is part of the Thumb family"
+    }
+
+    condition! {
+        name: "apple",
+        condition: config.target.contains("apple"),
+        message: "when the target vendor is Apple"
+    }
+
+    condition! {
+        name: "enzyme",
+        condition: config.has_enzyme,
+        message: "when rustc is built with LLVM Enzyme"
     }
 
     // Technically the locally built compiler uses the "dev" channel rather than the "nightly"
@@ -196,8 +203,8 @@ pub(super) fn parse_cfg_name_directive<'a>(
     }
     condition! {
         name: "debug",
-        condition: cfg!(debug_assertions),
-        message: "when building with debug assertions",
+        condition: config.with_debug_assertions,
+        message: "when running tests with `ignore-debug` header",
     }
     condition! {
         name: config.debugger.as_ref().map(|d| d.to_str()),
@@ -213,6 +220,14 @@ pub(super) fn parse_cfg_name_directive<'a>(
             inner: CompareMode::STR_VARIANTS,
         },
         message: "when comparing with {name}",
+    }
+    // Coverage tests run the same test file in multiple modes.
+    // If a particular test should not be run in one of the modes, ignore it
+    // with "ignore-coverage-map" or "ignore-coverage-run".
+    condition! {
+        name: config.mode.to_str(),
+        allowed_names: ["coverage-map", "coverage-run"],
+        message: "when the test mode is {name}",
     }
 
     if prefix == "ignore" && outcome == MatchOutcome::Invalid {

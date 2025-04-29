@@ -6,18 +6,23 @@
 // FIXME: this badly needs rename/rewrite (matklad, 2020-02-06).
 
 use arrayvec::ArrayVec;
+use either::Either;
 use hir::{
-    Adt, AsAssocItem, AssocItem, BuiltinAttr, BuiltinType, Const, Crate, DeriveHelper, Field,
-    Function, GenericParam, HasVisibility, Impl, Label, Local, Macro, Module, ModuleDef, Name,
-    PathResolution, Semantics, Static, ToolModule, Trait, TraitAlias, TypeAlias, Variant,
-    Visibility,
+    Adt, AsAssocItem, AsExternAssocItem, AssocItem, AttributeTemplate, BuiltinAttr, BuiltinType,
+    Const, Crate, DefWithBody, DeriveHelper, DocLinkDef, ExternAssocItem, ExternCrateDecl, Field,
+    Function, GenericParam, HasVisibility, HirDisplay, Impl, InlineAsmOperand, Label, Local, Macro,
+    Module, ModuleDef, Name, PathResolution, Semantics, Static, StaticLifetime, ToolModule, Trait,
+    TraitAlias, TupleField, TypeAlias, Variant, VariantDef, Visibility,
 };
-use stdx::impl_from;
+use span::Edition;
+use stdx::{format_to, impl_from};
 use syntax::{
     ast::{self, AstNode},
     match_ast, SyntaxKind, SyntaxNode, SyntaxToken,
 };
 
+use crate::documentation::{Documentation, HasDocs};
+use crate::famous_defs::FamousDefs;
 use crate::RootDatabase;
 
 // FIXME: a more precise name would probably be `Symbol`?
@@ -25,6 +30,7 @@ use crate::RootDatabase;
 pub enum Definition {
     Macro(Macro),
     Field(Field),
+    TupleField(TupleField),
     Module(Module),
     Function(Function),
     Adt(Adt),
@@ -34,14 +40,18 @@ pub enum Definition {
     Trait(Trait),
     TraitAlias(TraitAlias),
     TypeAlias(TypeAlias),
-    BuiltinType(BuiltinType),
     SelfType(Impl),
     GenericParam(GenericParam),
     Local(Local),
     Label(Label),
     DeriveHelper(DeriveHelper),
+    BuiltinType(BuiltinType),
+    BuiltinLifetime(StaticLifetime),
     BuiltinAttr(BuiltinAttr),
     ToolModule(ToolModule),
+    ExternCrateDecl(ExternCrateDecl),
+    InlineAsmRegOrRegClass(()),
+    InlineAsmOperand(InlineAsmOperand),
 }
 
 impl Definition {
@@ -73,12 +83,24 @@ impl Definition {
             Definition::Local(it) => it.module(db),
             Definition::GenericParam(it) => it.module(db),
             Definition::Label(it) => it.module(db),
+            Definition::ExternCrateDecl(it) => it.module(db),
             Definition::DeriveHelper(it) => it.derive().module(db),
-            Definition::BuiltinAttr(_) | Definition::BuiltinType(_) | Definition::ToolModule(_) => {
-                return None
-            }
+            Definition::InlineAsmOperand(it) => it.parent(db).module(db),
+            Definition::BuiltinAttr(_)
+            | Definition::BuiltinType(_)
+            | Definition::BuiltinLifetime(_)
+            | Definition::TupleField(_)
+            | Definition::ToolModule(_)
+            | Definition::InlineAsmRegOrRegClass(_) => return None,
         };
         Some(module)
+    }
+
+    pub fn enclosing_definition(&self, db: &RootDatabase) -> Option<Definition> {
+        match self {
+            Definition::Local(it) => it.parent(db).try_into().ok(),
+            _ => None,
+        }
     }
 
     pub fn visibility(&self, db: &RootDatabase) -> Option<Visibility> {
@@ -93,15 +115,19 @@ impl Definition {
             Definition::TraitAlias(it) => it.visibility(db),
             Definition::TypeAlias(it) => it.visibility(db),
             Definition::Variant(it) => it.visibility(db),
-            Definition::BuiltinType(_) => Visibility::Public,
+            Definition::ExternCrateDecl(it) => it.visibility(db),
+            Definition::BuiltinType(_) | Definition::TupleField(_) => Visibility::Public,
             Definition::Macro(_) => return None,
             Definition::BuiltinAttr(_)
+            | Definition::BuiltinLifetime(_)
             | Definition::ToolModule(_)
             | Definition::SelfType(_)
             | Definition::Local(_)
             | Definition::GenericParam(_)
             | Definition::Label(_)
-            | Definition::DeriveHelper(_) => return None,
+            | Definition::DeriveHelper(_)
+            | Definition::InlineAsmRegOrRegClass(_)
+            | Definition::InlineAsmOperand(_) => return None,
         };
         Some(vis)
     }
@@ -120,16 +146,155 @@ impl Definition {
             Definition::TraitAlias(it) => it.name(db),
             Definition::TypeAlias(it) => it.name(db),
             Definition::BuiltinType(it) => it.name(),
+            Definition::TupleField(it) => it.name(),
             Definition::SelfType(_) => return None,
             Definition::Local(it) => it.name(db),
             Definition::GenericParam(it) => it.name(db),
             Definition::Label(it) => it.name(db),
+            Definition::BuiltinLifetime(it) => it.name(),
             Definition::BuiltinAttr(_) => return None, // FIXME
             Definition::ToolModule(_) => return None,  // FIXME
             Definition::DeriveHelper(it) => it.name(db),
+            Definition::ExternCrateDecl(it) => return it.alias_or_name(db),
+            Definition::InlineAsmRegOrRegClass(_) => return None,
+            Definition::InlineAsmOperand(op) => return op.name(db),
         };
         Some(name)
     }
+
+    pub fn docs(
+        &self,
+        db: &RootDatabase,
+        famous_defs: Option<&FamousDefs<'_, '_>>,
+        edition: Edition,
+    ) -> Option<Documentation> {
+        let docs = match self {
+            Definition::Macro(it) => it.docs(db),
+            Definition::Field(it) => it.docs(db),
+            Definition::Module(it) => it.docs(db),
+            Definition::Function(it) => it.docs(db),
+            Definition::Adt(it) => it.docs(db),
+            Definition::Variant(it) => it.docs(db),
+            Definition::Const(it) => it.docs(db),
+            Definition::Static(it) => it.docs(db),
+            Definition::Trait(it) => it.docs(db),
+            Definition::TraitAlias(it) => it.docs(db),
+            Definition::TypeAlias(it) => it.docs(db),
+            Definition::BuiltinType(it) => {
+                famous_defs.and_then(|fd| {
+                    // std exposes prim_{} modules with docstrings on the root to document the builtins
+                    let primitive_mod = format!("prim_{}", it.name().display(fd.0.db, edition));
+                    let doc_owner = find_std_module(fd, &primitive_mod, edition)?;
+                    doc_owner.docs(fd.0.db)
+                })
+            }
+            Definition::BuiltinLifetime(StaticLifetime) => None,
+            Definition::Local(_) => None,
+            Definition::SelfType(impl_def) => {
+                impl_def.self_ty(db).as_adt().map(|adt| adt.docs(db))?
+            }
+            Definition::GenericParam(_) => None,
+            Definition::Label(_) => None,
+            Definition::ExternCrateDecl(it) => it.docs(db),
+
+            Definition::BuiltinAttr(it) => {
+                let name = it.name(db);
+                let AttributeTemplate { word, list, name_value_str } = it.template(db)?;
+                let mut docs = "Valid forms are:".to_owned();
+                if word {
+                    format_to!(docs, "\n - #\\[{}]", name.display(db, edition));
+                }
+                if let Some(list) = list {
+                    format_to!(docs, "\n - #\\[{}({})]", name.display(db, edition), list);
+                }
+                if let Some(name_value_str) = name_value_str {
+                    format_to!(
+                        docs,
+                        "\n - #\\[{} = {}]",
+                        name.display(db, edition),
+                        name_value_str
+                    );
+                }
+                Some(Documentation::new(docs.replace('*', "\\*")))
+            }
+            Definition::ToolModule(_) => None,
+            Definition::DeriveHelper(_) => None,
+            Definition::TupleField(_) => None,
+            Definition::InlineAsmRegOrRegClass(_) | Definition::InlineAsmOperand(_) => None,
+        };
+
+        docs.or_else(|| {
+            // docs are missing, for assoc items of trait impls try to fall back to the docs of the
+            // original item of the trait
+            let assoc = self.as_assoc_item(db)?;
+            let trait_ = assoc.implemented_trait(db)?;
+            let name = Some(assoc.name(db)?);
+            let item = trait_.items(db).into_iter().find(|it| it.name(db) == name)?;
+            item.docs(db)
+        })
+    }
+
+    pub fn label(&self, db: &RootDatabase, edition: Edition) -> String {
+        match *self {
+            Definition::Macro(it) => it.display(db, edition).to_string(),
+            Definition::Field(it) => it.display(db, edition).to_string(),
+            Definition::TupleField(it) => it.display(db, edition).to_string(),
+            Definition::Module(it) => it.display(db, edition).to_string(),
+            Definition::Function(it) => it.display(db, edition).to_string(),
+            Definition::Adt(it) => it.display(db, edition).to_string(),
+            Definition::Variant(it) => it.display(db, edition).to_string(),
+            Definition::Const(it) => it.display(db, edition).to_string(),
+            Definition::Static(it) => it.display(db, edition).to_string(),
+            Definition::Trait(it) => it.display(db, edition).to_string(),
+            Definition::TraitAlias(it) => it.display(db, edition).to_string(),
+            Definition::TypeAlias(it) => it.display(db, edition).to_string(),
+            Definition::BuiltinType(it) => it.name().display(db, edition).to_string(),
+            Definition::BuiltinLifetime(it) => it.name().display(db, edition).to_string(),
+            Definition::Local(it) => {
+                let ty = it.ty(db);
+                let ty_display = ty.display_truncated(db, None, edition);
+                let is_mut = if it.is_mut(db) { "mut " } else { "" };
+                if it.is_self(db) {
+                    format!("{is_mut}self: {ty_display}")
+                } else {
+                    let name = it.name(db);
+                    let let_kw = if it.is_param(db) { "" } else { "let " };
+                    format!("{let_kw}{is_mut}{}: {ty_display}", name.display(db, edition))
+                }
+            }
+            Definition::SelfType(impl_def) => {
+                let self_ty = &impl_def.self_ty(db);
+                match self_ty.as_adt() {
+                    Some(it) => it.display(db, edition).to_string(),
+                    None => self_ty.display(db, edition).to_string(),
+                }
+            }
+            Definition::GenericParam(it) => it.display(db, edition).to_string(),
+            Definition::Label(it) => it.name(db).display(db, edition).to_string(),
+            Definition::ExternCrateDecl(it) => it.display(db, edition).to_string(),
+            Definition::BuiltinAttr(it) => format!("#[{}]", it.name(db).display(db, edition)),
+            Definition::ToolModule(it) => it.name(db).display(db, edition).to_string(),
+            Definition::DeriveHelper(it) => {
+                format!("derive_helper {}", it.name(db).display(db, edition))
+            }
+            // FIXME
+            Definition::InlineAsmRegOrRegClass(_) => "inline_asm_reg_or_reg_class".to_owned(),
+            Definition::InlineAsmOperand(_) => "inline_asm_reg_operand".to_owned(),
+        }
+    }
+}
+
+fn find_std_module(
+    famous_defs: &FamousDefs<'_, '_>,
+    name: &str,
+    edition: Edition,
+) -> Option<hir::Module> {
+    let db = famous_defs.0.db;
+    let std_crate = famous_defs.std()?;
+    let std_root_module = std_crate.root_module();
+    std_root_module.children(db).find(|module| {
+        module.name(db).map_or(false, |module| module.display(db, edition).to_string() == name)
+    })
 }
 
 // FIXME: IdentClass as a name no longer fits
@@ -157,8 +322,8 @@ impl IdentClass {
                 ast::AwaitExpr(await_expr) => OperatorClass::classify_await(sema, &await_expr).map(IdentClass::Operator),
                 ast::BinExpr(bin_expr) => OperatorClass::classify_bin(sema, &bin_expr).map(IdentClass::Operator),
                 ast::IndexExpr(index_expr) => OperatorClass::classify_index(sema, &index_expr).map(IdentClass::Operator),
-                ast::PrefixExpr(prefix_expr) => OperatorClass::classify_prefix(sema,&prefix_expr).map(IdentClass::Operator),
-                ast::TryExpr(try_expr) => OperatorClass::classify_try(sema,&try_expr).map(IdentClass::Operator),
+                ast::PrefixExpr(prefix_expr) => OperatorClass::classify_prefix(sema, &prefix_expr).map(IdentClass::Operator),
+                ast::TryExpr(try_expr) => OperatorClass::classify_try(sema, &try_expr).map(IdentClass::Operator),
                 _ => None,
             }
         }
@@ -196,6 +361,10 @@ impl IdentClass {
                 res.push(Definition::Local(local_ref));
                 res.push(Definition::Field(field_ref));
             }
+            IdentClass::NameRefClass(NameRefClass::ExternCrateShorthand { decl, krate }) => {
+                res.push(Definition::ExternCrateDecl(decl));
+                res.push(Definition::Module(krate.root_module()));
+            }
             IdentClass::Operator(
                 OperatorClass::Await(func)
                 | OperatorClass::Prefix(func)
@@ -221,6 +390,10 @@ impl IdentClass {
             IdentClass::NameRefClass(NameRefClass::FieldShorthand { local_ref, field_ref }) => {
                 res.push(Definition::Local(local_ref));
                 res.push(Definition::Field(field_ref));
+            }
+            IdentClass::NameRefClass(NameRefClass::ExternCrateShorthand { decl, krate }) => {
+                res.push(Definition::ExternCrateDecl(decl));
+                res.push(Definition::Module(krate.root_module()));
             }
             IdentClass::Operator(_) => (),
         }
@@ -265,10 +438,9 @@ impl NameClass {
     }
 
     pub fn classify(sema: &Semantics<'_, RootDatabase>, name: &ast::Name) -> Option<NameClass> {
-        let _p = profile::span("classify_name");
+        let _p = tracing::info_span!("NameClass::classify").entered();
 
         let parent = name.syntax().parent()?;
-
         let definition = match_ast! {
             match parent {
                 ast::Item(it) => classify_item(sema, it)?,
@@ -279,6 +451,7 @@ impl NameClass {
                 ast::Variant(it) => Definition::Variant(sema.to_def(&it)?),
                 ast::TypeParam(it) => Definition::GenericParam(sema.to_def(&it)?.into()),
                 ast::ConstParam(it) => Definition::GenericParam(sema.to_def(&it)?.into()),
+                ast::AsmOperandNamed(it) => Definition::InlineAsmOperand(sema.to_def(&it)?),
                 _ => return None,
             }
         };
@@ -310,6 +483,7 @@ impl NameClass {
                 ast::Item::Enum(it) => Definition::Adt(hir::Adt::Enum(sema.to_def(&it)?)),
                 ast::Item::Struct(it) => Definition::Adt(hir::Adt::Struct(sema.to_def(&it)?)),
                 ast::Item::Union(it) => Definition::Adt(hir::Adt::Union(sema.to_def(&it)?)),
+                ast::Item::ExternCrate(it) => Definition::ExternCrateDecl(sema.to_def(&it)?),
                 _ => return None,
             };
             Some(definition)
@@ -346,10 +520,8 @@ impl NameClass {
                 let path = use_tree.path()?;
                 sema.resolve_path(&path).map(Definition::from)
             } else {
-                let extern_crate = rename.syntax().parent().and_then(ast::ExternCrate::cast)?;
-                let krate = sema.resolve_extern_crate(&extern_crate)?;
-                let root_module = krate.root_module(sema.db);
-                Some(Definition::Module(root_module))
+                sema.to_def(&rename.syntax().parent().and_then(ast::ExternCrate::cast)?)
+                    .map(Definition::ExternCrateDecl)
             }
         }
     }
@@ -358,7 +530,7 @@ impl NameClass {
         sema: &Semantics<'_, RootDatabase>,
         lifetime: &ast::Lifetime,
     ) -> Option<NameClass> {
-        let _p = profile::span("classify_lifetime").detail(|| lifetime.to_string());
+        let _p = tracing::info_span!("NameClass::classify_lifetime", ?lifetime).entered();
         let parent = lifetime.syntax().parent()?;
 
         if let Some(it) = ast::LifetimeParam::cast(parent.clone()) {
@@ -427,7 +599,19 @@ impl OperatorClass {
 #[derive(Debug)]
 pub enum NameRefClass {
     Definition(Definition),
-    FieldShorthand { local_ref: Local, field_ref: Field },
+    FieldShorthand {
+        local_ref: Local,
+        field_ref: Field,
+    },
+    /// The specific situation where we have an extern crate decl without a rename
+    /// Here we have both a declaration and a reference.
+    /// ```rs
+    /// extern crate foo;
+    /// ```
+    ExternCrateShorthand {
+        decl: ExternCrateDecl,
+        krate: Crate,
+    },
 }
 
 impl NameRefClass {
@@ -437,7 +621,7 @@ impl NameRefClass {
         sema: &Semantics<'_, RootDatabase>,
         name_ref: &ast::NameRef,
     ) -> Option<NameRefClass> {
-        let _p = profile::span("classify_name_ref").detail(|| name_ref.to_string());
+        let _p = tracing::info_span!("NameRefClass::classify", ?name_ref).entered();
 
         let parent = name_ref.syntax().parent()?;
 
@@ -469,7 +653,7 @@ impl NameRefClass {
         match_ast! {
             match parent {
                 ast::MethodCallExpr(method_call) => {
-                    sema.resolve_method_call_field_fallback(&method_call)
+                    sema.resolve_method_call_fallback(&method_call)
                         .map(|it| {
                             it.map_left(Definition::Function)
                                 .map_right(Definition::Field)
@@ -477,9 +661,14 @@ impl NameRefClass {
                         })
                 },
                 ast::FieldExpr(field_expr) => {
-                    sema.resolve_field(&field_expr)
-                        .map(Definition::Field)
-                        .map(NameRefClass::Definition)
+                    sema.resolve_field_fallback(&field_expr)
+                    .map(|it| {
+                        NameRefClass::Definition(match it {
+                            Either::Left(Either::Left(field)) => Definition::Field(field),
+                            Either::Left(Either::Right(field)) => Definition::TupleField(field),
+                            Either::Right(fun) => Definition::Function(fun),
+                        })
+                    })
                 },
                 ast::RecordPatField(record_pat_field) => {
                     sema.resolve_record_pat_field(&record_pat_field)
@@ -506,17 +695,24 @@ impl NameRefClass {
                                 hir::AssocItem::TypeAlias(it) => Some(it),
                                 _ => None,
                             })
-                            .find(|alias| alias.name(sema.db).to_smol_str() == name_ref.text().as_str())
+                            .find(|alias| alias.name(sema.db).eq_ident(name_ref.text().as_str()))
                         {
                             return Some(NameRefClass::Definition(Definition::TypeAlias(ty)));
                         }
                     }
                     None
                 },
-                ast::ExternCrate(extern_crate) => {
-                    let krate = sema.resolve_extern_crate(&extern_crate)?;
-                    let root_module = krate.root_module(sema.db);
-                    Some(NameRefClass::Definition(Definition::Module(root_module)))
+                ast::ExternCrate(extern_crate_ast) => {
+                    let extern_crate = sema.to_def(&extern_crate_ast)?;
+                    let krate = extern_crate.resolved_crate(sema.db)?;
+                    Some(if extern_crate_ast.rename().is_some() {
+                        NameRefClass::Definition(Definition::Module(krate.root_module()))
+                    } else {
+                        NameRefClass::ExternCrateShorthand { krate, decl: extern_crate }
+                    })
+                },
+                ast::AsmRegSpec(_) => {
+                    Some(NameRefClass::Definition(Definition::InlineAsmRegOrRegClass(())))
                 },
                 _ => None
             }
@@ -527,7 +723,10 @@ impl NameRefClass {
         sema: &Semantics<'_, RootDatabase>,
         lifetime: &ast::Lifetime,
     ) -> Option<NameRefClass> {
-        let _p = profile::span("classify_lifetime_ref").detail(|| lifetime.to_string());
+        let _p = tracing::info_span!("NameRefClass::classify_lifetime", ?lifetime).entered();
+        if lifetime.text() == "'static" {
+            return Some(NameRefClass::Definition(Definition::BuiltinLifetime(StaticLifetime)));
+        }
         let parent = lifetime.syntax().parent()?;
         match parent.kind() {
             SyntaxKind::BREAK_EXPR | SyntaxKind::CONTINUE_EXPR => {
@@ -559,7 +758,7 @@ impl NameRefClass {
 
 impl_from!(
     Field, Module, Function, Adt, Variant, Const, Static, Trait, TraitAlias, TypeAlias, BuiltinType, Local,
-    GenericParam, Label, Macro
+    GenericParam, Label, Macro, ExternCrateDecl
     for Definition
 );
 
@@ -569,12 +768,35 @@ impl From<Impl> for Definition {
     }
 }
 
+impl From<InlineAsmOperand> for Definition {
+    fn from(value: InlineAsmOperand) -> Self {
+        Definition::InlineAsmOperand(value)
+    }
+}
+
+impl From<Either<PathResolution, InlineAsmOperand>> for Definition {
+    fn from(value: Either<PathResolution, InlineAsmOperand>) -> Self {
+        value.either(Definition::from, Definition::from)
+    }
+}
+
 impl AsAssocItem for Definition {
     fn as_assoc_item(self, db: &dyn hir::db::HirDatabase) -> Option<AssocItem> {
         match self {
             Definition::Function(it) => it.as_assoc_item(db),
             Definition::Const(it) => it.as_assoc_item(db),
             Definition::TypeAlias(it) => it.as_assoc_item(db),
+            _ => None,
+        }
+    }
+}
+
+impl AsExternAssocItem for Definition {
+    fn as_extern_assoc_item(self, db: &dyn hir::db::HirDatabase) -> Option<ExternAssocItem> {
+        match self {
+            Definition::Function(it) => it.as_extern_assoc_item(db),
+            Definition::Static(it) => it.as_extern_assoc_item(db),
+            Definition::TypeAlias(it) => it.as_extern_assoc_item(db),
             _ => None,
         }
     }
@@ -619,6 +841,35 @@ impl From<ModuleDef> for Definition {
             ModuleDef::TypeAlias(it) => Definition::TypeAlias(it),
             ModuleDef::Macro(it) => Definition::Macro(it),
             ModuleDef::BuiltinType(it) => Definition::BuiltinType(it),
+        }
+    }
+}
+
+impl From<DocLinkDef> for Definition {
+    fn from(def: DocLinkDef) -> Self {
+        match def {
+            DocLinkDef::ModuleDef(it) => it.into(),
+            DocLinkDef::Field(it) => it.into(),
+            DocLinkDef::SelfType(it) => it.into(),
+        }
+    }
+}
+
+impl From<VariantDef> for Definition {
+    fn from(def: VariantDef) -> Self {
+        ModuleDef::from(def).into()
+    }
+}
+
+impl TryFrom<DefWithBody> for Definition {
+    type Error = ();
+    fn try_from(def: DefWithBody) -> Result<Self, Self::Error> {
+        match def {
+            DefWithBody::Function(it) => Ok(it.into()),
+            DefWithBody::Static(it) => Ok(it.into()),
+            DefWithBody::Const(it) => Ok(it.into()),
+            DefWithBody::Variant(it) => Ok(it.into()),
+            DefWithBody::InTypeConst(_) => Err(()),
         }
     }
 }
