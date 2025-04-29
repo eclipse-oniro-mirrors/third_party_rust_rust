@@ -1,10 +1,10 @@
-//@aux-build:proc_macros.rs:proc-macro
+//@aux-build:proc_macros.rs
 #![allow(irrefutable_let_patterns, nonstandard_style, unused)]
+#![allow(clippy::struct_field_names)]
 #![warn(clippy::min_ident_chars)]
 
 extern crate proc_macros;
-use proc_macros::external;
-use proc_macros::with_span;
+use proc_macros::{external, with_span};
 
 struct A {
     a: u32,
@@ -36,6 +36,12 @@ struct Vec4 {
 }
 
 struct AA<T, E>(T, E);
+
+trait Trait {
+    const A: u32 = 0;
+    type A;
+    fn a() {}
+}
 
 fn main() {
     // Allowed idents
@@ -81,4 +87,8 @@ fn main() {
 fn b() {}
 fn wrong_pythagoras(a: f32, b: f32) -> f32 {
     a * a + a * b
+}
+
+mod issue_11163 {
+    struct Array<T, const N: usize>([T; N]);
 }

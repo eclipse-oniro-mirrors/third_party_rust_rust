@@ -1,10 +1,11 @@
-//@compile-flags: -Zmiri-tree-borrows -Zmiri-tag-gc=0
+// We disable the GC for this test because it would change what is printed.
+//@compile-flags: -Zmiri-tree-borrows -Zmiri-provenance-gc=0
 
 // Check how a Reserved with interior mutability
 // responds to a Foreign Write under a Protector
 #[path = "../../../utils/mod.rs"]
+#[macro_use]
 mod utils;
-use utils::macros::*;
 
 use std::cell::UnsafeCell;
 

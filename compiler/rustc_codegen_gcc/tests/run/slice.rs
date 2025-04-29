@@ -4,7 +4,8 @@
 //   status: 0
 //   stdout: 5
 
-#![feature(arbitrary_self_types, auto_traits, lang_items, no_core, start, intrinsics)]
+#![feature(arbitrary_self_types, auto_traits, lang_items, no_core, start, intrinsics, rustc_attrs)]
+#![allow(internal_features)]
 
 #![no_std]
 #![no_core]
@@ -25,6 +26,7 @@ impl Copy for isize {}
 impl Copy for usize {}
 impl Copy for i32 {}
 impl Copy for u32 {}
+impl<T: ?Sized> Copy for *mut T {}
 
 #[lang = "receiver"]
 trait Receiver {

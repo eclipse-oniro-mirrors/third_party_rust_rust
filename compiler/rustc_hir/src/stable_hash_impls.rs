@@ -1,10 +1,10 @@
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher, ToStableHashKey};
+use rustc_span::def_id::DefPathHash;
 
 use crate::hir::{
     AttributeMap, BodyId, Crate, ForeignItemId, ImplItemId, ItemId, OwnerNodes, TraitItemId,
 };
 use crate::hir_id::{HirId, ItemLocalId};
-use rustc_span::def_id::DefPathHash;
 
 /// Requirements for a `StableHashingContext` to be used in this crate.
 /// This is a hack to allow using the `HashStable_Generic` derive macro
@@ -12,7 +12,6 @@ use rustc_span::def_id::DefPathHash;
 pub trait HashStableContext:
     rustc_ast::HashStableContext + rustc_target::HashStableContext
 {
-    fn hash_body_id(&mut self, _: BodyId, hasher: &mut StableHasher);
 }
 
 impl<HirCtx: crate::HashStableContext> ToStableHashKey<HirCtx> for HirId {
@@ -77,12 +76,6 @@ impl<HirCtx: crate::HashStableContext> ToStableHashKey<HirCtx> for ForeignItemId
     #[inline]
     fn to_stable_hash_key(&self, hcx: &HirCtx) -> DefPathHash {
         self.owner_id.def_id.to_stable_hash_key(hcx)
-    }
-}
-
-impl<HirCtx: crate::HashStableContext> HashStable<HirCtx> for BodyId {
-    fn hash_stable(&self, hcx: &mut HirCtx, hasher: &mut StableHasher) {
-        hcx.hash_body_id(*self, hasher)
     }
 }
 

@@ -1,10 +1,7 @@
-// edition: 2021
-// known-bug: #110963
-// [next] compile-flags: -Zlower-impl-trait-in-trait-to-assoc-ty
-// revisions: current next
+//@ edition: 2021
+//@ known-bug: #110963
 
 #![feature(return_type_notation)]
-#![feature(async_fn_in_trait)]
 
 trait HealthCheck {
     async fn check<'a: 'a>(&'a mut self) -> bool;
@@ -12,7 +9,7 @@ trait HealthCheck {
 
 async fn do_health_check_par<HC>(hc: HC)
 where
-    HC: HealthCheck<check(): Send> + Send + 'static,
+    HC: HealthCheck<check(..): Send> + Send + 'static,
 {
     spawn(async move {
         let mut hc = hc;

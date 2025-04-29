@@ -1,66 +1,54 @@
 //! A module for searching for libraries
 
-use rustc_fs_util::try_canonicalize;
-use smallvec::{smallvec, SmallVec};
-use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{env, fs};
+
+use rustc_fs_util::{fix_windows_verbatim_for_gcc, try_canonicalize};
+use smallvec::{SmallVec, smallvec};
 
 use crate::search_paths::{PathKind, SearchPath};
-use rustc_fs_util::fix_windows_verbatim_for_gcc;
-
-#[derive(Copy, Clone)]
-pub enum FileMatch {
-    FileMatches,
-    FileDoesntMatch,
-}
 
 #[derive(Clone)]
 pub struct FileSearch<'a> {
-    sysroot: &'a Path,
-    triple: &'a str,
-    search_paths: &'a [SearchPath],
+    cli_search_paths: &'a [SearchPath],
     tlib_path: &'a SearchPath,
     kind: PathKind,
 }
 
 impl<'a> FileSearch<'a> {
+    pub fn cli_search_paths(&self) -> impl Iterator<Item = &'a SearchPath> {
+        let kind = self.kind;
+        self.cli_search_paths.iter().filter(move |sp| sp.kind.matches(kind))
+    }
+
     pub fn search_paths(&self) -> impl Iterator<Item = &'a SearchPath> {
         let kind = self.kind;
-        self.search_paths
+        self.cli_search_paths
             .iter()
             .filter(move |sp| sp.kind.matches(kind))
             .chain(std::iter::once(self.tlib_path))
     }
 
-    pub fn get_lib_path(&self) -> PathBuf {
-        make_target_lib_path(self.sysroot, self.triple)
-    }
-
-    pub fn get_self_contained_lib_path(&self) -> PathBuf {
-        self.get_lib_path().join("self-contained")
-    }
-
     pub fn new(
-        sysroot: &'a Path,
-        triple: &'a str,
-        search_paths: &'a [SearchPath],
+        cli_search_paths: &'a [SearchPath],
         tlib_path: &'a SearchPath,
         kind: PathKind,
     ) -> FileSearch<'a> {
-        debug!("using sysroot = {}, triple = {}", sysroot.display(), triple);
-        FileSearch { sysroot, triple, search_paths, tlib_path, kind }
-    }
-
-    /// Returns just the directories within the search paths.
-    pub fn search_path_dirs(&self) -> Vec<PathBuf> {
-        self.search_paths().map(|sp| sp.dir.to_path_buf()).collect()
+        FileSearch { cli_search_paths, tlib_path, kind }
     }
 }
 
 pub fn make_target_lib_path(sysroot: &Path, target_triple: &str) -> PathBuf {
-    let rustlib_path = rustc_target::target_rustlib_path(sysroot, target_triple);
-    PathBuf::from_iter([sysroot, Path::new(&rustlib_path), Path::new("lib")])
+    let rustlib_path = rustc_target::relative_target_rustlib_path(sysroot, target_triple);
+    sysroot.join(rustlib_path).join("lib")
+}
+
+/// Returns a path to the target's `bin` folder within its `rustlib` path in the sysroot. This is
+/// where binaries are usually installed, e.g. the self-contained linkers, lld-wrappers, LLVM tools,
+/// etc.
+pub fn make_target_bin_path(sysroot: &Path, target_triple: &str) -> PathBuf {
+    let rustlib_path = rustc_target::relative_target_rustlib_path(sysroot, target_triple);
+    sysroot.join(rustlib_path).join("bin")
 }
 
 #[cfg(unix)]
@@ -133,13 +121,11 @@ fn current_dll_path() -> Result<PathBuf, String> {
     use std::io;
     use std::os::windows::prelude::*;
 
-    use windows::{
-        core::PCWSTR,
-        Win32::Foundation::HMODULE,
-        Win32::System::LibraryLoader::{
-            GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-        },
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::System::LibraryLoader::{
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GetModuleFileNameW, GetModuleHandleExW,
     };
+    use windows::core::PCWSTR;
 
     let mut module = HMODULE::default();
     unsafe {
@@ -149,7 +135,6 @@ fn current_dll_path() -> Result<PathBuf, String> {
             &mut module,
         )
     }
-    .ok()
     .map_err(|e| e.to_string())?;
 
     let mut filename = vec![0; 1024];
@@ -197,7 +182,13 @@ pub fn sysroot_candidates() -> SmallVec<[PathBuf; 2]> {
         }
     }
 
-    return sysroot_candidates;
+    sysroot_candidates
+}
+
+/// Returns the provided sysroot or calls [`get_or_default_sysroot`] if it's none.
+/// Panics if [`get_or_default_sysroot`]  returns an error.
+pub fn materialize_sysroot(maybe_sysroot: Option<PathBuf>) -> PathBuf {
+    maybe_sysroot.unwrap_or_else(|| get_or_default_sysroot().expect("Failed finding sysroot"))
 }
 
 /// This function checks if sysroot is found using env::args().next(), and if it
@@ -274,7 +265,7 @@ pub fn get_or_default_sysroot() -> Result<PathBuf, String> {
                 p.pop();
                 p.pop();
                 // Look for the target rustlib directory in the suspected sysroot.
-                let mut rustlib_path = rustc_target::target_rustlib_path(&p, "dummy");
+                let mut rustlib_path = rustc_target::relative_target_rustlib_path(&p, "dummy");
                 rustlib_path.pop(); // pop off the dummy target.
                 rustlib_path.exists().then_some(p)
             }

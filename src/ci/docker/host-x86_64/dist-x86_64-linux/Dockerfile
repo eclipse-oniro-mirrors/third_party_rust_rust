@@ -6,13 +6,16 @@ FROM centos:7
 
 WORKDIR /build
 
+# CentOS 7 EOL is June 30, 2024, but the repos remain in the vault.
+RUN sed -i /etc/yum.repos.d/*.repo -e 's!^mirrorlist!#mirrorlist!' \
+  -e 's!^#baseurl=http://mirror.centos.org/!baseurl=https://vault.centos.org/!'
+RUN sed -i 's/enabled=1/enabled=0/' /etc/yum/pluginconf.d/fastestmirror.conf
+
 RUN yum upgrade -y && \
-    yum install -y epel-release && \
     yum install -y \
       automake \
       bzip2 \
       file \
-      cmake3 \
       gcc \
       gcc-c++ \
       git \
@@ -26,6 +29,7 @@ RUN yum upgrade -y && \
       openssl-devel \
       patch \
       perl \
+      perl-core \
       pkgconfig \
       python3 \
       unzip \
@@ -35,7 +39,7 @@ RUN yum upgrade -y && \
       zlib-devel.x86_64 \
       && yum clean all
 
-RUN mkdir -p /rustroot/bin && ln -s /usr/bin/cmake3 /rustroot/bin/cmake
+RUN mkdir -p /rustroot/bin
 
 ENV PATH=/rustroot/bin:$PATH
 ENV LD_LIBRARY_PATH=/rustroot/lib64:/rustroot/lib32:/rustroot/lib
@@ -48,18 +52,19 @@ COPY host-x86_64/dist-x86_64-linux/shared.sh /tmp/
 COPY host-x86_64/dist-x86_64-linux/build-gcc.sh /tmp/
 RUN ./build-gcc.sh && yum remove -y gcc gcc-c++
 
+# LLVM 17 needs cmake 3.20 or higher.
+COPY scripts/cmake.sh /tmp/
+RUN ./cmake.sh
+
 # Now build LLVM+Clang, afterwards configuring further compilations to use the
 # clang/clang++ compilers.
 COPY host-x86_64/dist-x86_64-linux/build-clang.sh /tmp/
 RUN ./build-clang.sh
 ENV CC=clang CXX=clang++
 
-# rustc-perf version from 2023-03-15
-ENV PERF_COMMIT 8b2ac3042e1ff2c0074455a0a3618adef97156b1
-RUN curl -LS -o perf.zip https://github.com/rust-lang/rustc-perf/archive/$PERF_COMMIT.zip && \
-    unzip perf.zip && \
-    mv rustc-perf-$PERF_COMMIT rustc-perf && \
-    rm perf.zip
+# Build zstd to enable `llvm.libzstd`.
+COPY host-x86_64/dist-x86_64-linux/build-zstd.sh /tmp/
+RUN ./build-zstd.sh
 
 COPY scripts/sccache.sh /scripts/
 RUN sh /scripts/sccache.sh
@@ -78,10 +83,14 @@ ENV RUST_CONFIGURE_ARGS \
       --set target.x86_64-unknown-linux-gnu.ranlib=/rustroot/bin/llvm-ranlib \
       --set llvm.thin-lto=true \
       --set llvm.ninja=false \
+      --set llvm.libzstd=true \
       --set rust.jemalloc \
       --set rust.use-lld=true \
-      --set rust.lto=thin
-ENV SCRIPT python3 ../src/ci/stage-build.py python3 ../x.py dist \
+      --set rust.lto=thin \
+      --set rust.codegen-units=1
+
+ENV SCRIPT python3 ../x.py build --set rust.debug=true opt-dist && \
+    ./build/$HOSTS/stage0-tools-bin/opt-dist linux-ci -- python3 ../x.py dist \
     --host $HOSTS --target $HOSTS \
     --include-default-paths \
     build-manifest bootstrap

@@ -146,7 +146,7 @@ enum SingleVariantEnum {
 }
 use SingleVariantEnum::Variant;
 fn foo() {
-   let a$0
+   for a$0
 }
 "#,
         expect![[r#"
@@ -198,6 +198,7 @@ fn foo(a$0: Tuple) {
             st Unit
             bn Record {…} Record { field$1 }$0
             bn Tuple(…)   Tuple($1)$0
+            bn tuple
             kw mut
             kw ref
         "#]],
@@ -355,6 +356,35 @@ fn outer(Foo { bar$0 }: Foo) {}
 }
 
 #[test]
+fn completes_in_record_field_pat_with_generic_type_alias() {
+    check_empty(
+        r#"
+type Wrap<T> = T;
+
+enum X {
+    A { cool: u32, stuff: u32 },
+    B,
+}
+
+fn main() {
+    let wrapped = Wrap::<X>::A {
+        cool: 100,
+        stuff: 100,
+    };
+
+    if let Wrap::<X>::A { $0 } = &wrapped {};
+}
+"#,
+        expect![[r#"
+            fd cool  u32
+            fd stuff u32
+            kw mut
+            kw ref
+        "#]],
+    )
+}
+
+#[test]
 fn completes_in_fn_param() {
     check_empty(
         r#"
@@ -406,7 +436,7 @@ fn foo() {
 }
 "#,
         expect![[r#"
-            st Bar
+            st Bar     Bar
             kw crate::
             kw self::
         "#]],
@@ -421,7 +451,7 @@ fn foo() {
 }
 "#,
         expect![[r#"
-            st Foo
+            st Foo     Foo
             kw crate::
             kw self::
         "#]],
@@ -787,6 +817,127 @@ pub enum Enum {
             st S
             kw mut
             kw ref
+        "#]],
+    );
+}
+
+#[test]
+fn add_space_after_mut_ref_kw() {
+    check_edit(
+        "mut",
+        r#"
+fn foo() {
+    let $0
+}
+"#,
+        r#"
+fn foo() {
+    let mut $0
+}
+"#,
+    );
+
+    check_edit(
+        "ref",
+        r#"
+fn foo() {
+    let $0
+}
+"#,
+        r#"
+fn foo() {
+    let ref $0
+}
+"#,
+    );
+}
+
+#[test]
+fn suggest_name_for_pattern() {
+    check_edit(
+        "s1",
+        r#"
+struct S1;
+
+fn foo() {
+    let $0 = S1;
+}
+"#,
+        r#"
+struct S1;
+
+fn foo() {
+    let s1 = S1;
+}
+"#,
+    );
+
+    check_edit(
+        "s1",
+        r#"
+struct S1;
+
+fn foo(s$0: S1) {
+}
+"#,
+        r#"
+struct S1;
+
+fn foo(s1: S1) {
+}
+"#,
+    );
+
+    // Tests for &adt
+    check_edit(
+        "s1",
+        r#"
+struct S1;
+
+fn foo() {
+    let $0 = &S1;
+}
+"#,
+        r#"
+struct S1;
+
+fn foo() {
+    let s1 = &S1;
+}
+"#,
+    );
+
+    // Do not suggest reserved keywords
+    check_empty(
+        r#"
+struct Struct;
+
+fn foo() {
+    let $0 = Struct;
+}
+"#,
+        expect![[r#"
+            st Struct
+            kw mut
+            kw ref
+        "#]],
+    );
+}
+
+#[test]
+fn private_item_in_module_in_function_body() {
+    check_empty(
+        r#"
+fn main() {
+    mod foo {
+        struct Private;
+        pub struct Public;
+    }
+    foo::$0
+}
+"#,
+        expect![[r#"
+            st Public Public
         "#]],
     );
 }

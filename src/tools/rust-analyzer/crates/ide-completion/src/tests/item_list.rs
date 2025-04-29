@@ -14,6 +14,7 @@ fn in_mod_item_list() {
         r#"mod tests { $0 }"#,
         expect![[r#"
             ma makro!(…)           macro_rules! makro
+            kw async
             kw const
             kw crate::
             kw enum
@@ -47,6 +48,7 @@ fn in_source_file_item_list() {
         expect![[r#"
             ma makro!(…)           macro_rules! makro
             md module
+            kw async
             kw const
             kw crate::
             kw enum
@@ -79,6 +81,7 @@ fn in_item_list_after_attr() {
         expect![[r#"
             ma makro!(…)           macro_rules! makro
             md module
+            kw async
             kw const
             kw crate::
             kw enum
@@ -120,9 +123,22 @@ fn after_unsafe_token() {
     check(
         r#"unsafe $0"#,
         expect![[r#"
+            kw async
+            kw extern
             kw fn
             kw impl
             kw trait
+        "#]],
+    );
+}
+
+#[test]
+fn after_async_token() {
+    check(
+        r#"async $0"#,
+        expect![[r#"
+            kw fn
+            kw unsafe
         "#]],
     );
 }
@@ -132,6 +148,7 @@ fn after_visibility() {
     check(
         r#"pub $0"#,
         expect![[r#"
+            kw async
             kw const
             kw enum
             kw extern
@@ -153,6 +170,7 @@ fn after_visibility_unsafe() {
     check(
         r#"pub unsafe $0"#,
         expect![[r#"
+            kw async
             kw fn
             kw trait
         "#]],
@@ -166,6 +184,7 @@ fn in_impl_assoc_item_list() {
         expect![[r#"
             ma makro!(…)  macro_rules! makro
             md module
+            kw async
             kw const
             kw crate::
             kw fn
@@ -185,6 +204,7 @@ fn in_impl_assoc_item_list_after_attr() {
         expect![[r#"
             ma makro!(…)  macro_rules! makro
             md module
+            kw async
             kw const
             kw crate::
             kw fn
@@ -204,6 +224,7 @@ fn in_trait_assoc_item_list() {
         expect![[r#"
             ma makro!(…) macro_rules! makro
             md module
+            kw async
             kw const
             kw crate::
             kw fn
@@ -221,6 +242,7 @@ fn in_trait_assoc_fn_missing_body() {
         expect![[r#"
             ma makro!(…) macro_rules! makro
             md module
+            kw async
             kw const
             kw crate::
             kw fn
@@ -238,6 +260,7 @@ fn in_trait_assoc_const_missing_body() {
         expect![[r#"
             ma makro!(…) macro_rules! makro
             md module
+            kw async
             kw const
             kw crate::
             kw fn
@@ -255,6 +278,7 @@ fn in_trait_assoc_type_aliases_missing_ty() {
         expect![[r#"
             ma makro!(…) macro_rules! makro
             md module
+            kw async
             kw const
             kw crate::
             kw fn
@@ -276,6 +300,7 @@ trait Test {
     const CONST1: ();
     fn function0();
     fn function1();
+    async fn function2();
 }
 
 impl Test for () {
@@ -287,8 +312,10 @@ impl Test for () {
 "#,
         expect![[r#"
             ct const CONST1: () =
+            fn async fn function2()
             fn fn function1()
-            ma makro!(…)          macro_rules! makro
+            fn fn function2()
+            ma makro!(…)            macro_rules! makro
             md module
             ta type Type1 =
             kw crate::
@@ -356,6 +383,7 @@ fn after_unit_struct() {
         expect![[r#"
             ma makro!(…)           macro_rules! makro
             md module
+            kw async
             kw const
             kw crate::
             kw enum
@@ -466,5 +494,59 @@ impl B for A {
 type O = $0;
 }
 ",
+    )
+}
+
+#[test]
+fn inside_extern_blocks() {
+    // Should suggest `fn`, `static`, `unsafe`
+    check(
+        r#"extern { $0 }"#,
+        expect![[r#"
+            ma makro!(…)  macro_rules! makro
+            md module
+            kw crate::
+            kw fn
+            kw pub
+            kw pub(crate)
+            kw pub(super)
+            kw self::
+            kw static
+            kw unsafe
+        "#]],
+    );
+
+    // Should suggest `fn`, `static`, `safe`, `unsafe`
+    check(
+        r#"unsafe extern { $0 }"#,
+        expect![[r#"
+            ma makro!(…)  macro_rules! makro
+            md module
+            kw crate::
+            kw fn
+            kw pub
+            kw pub(crate)
+            kw pub(super)
+            kw safe
+            kw self::
+            kw static
+            kw unsafe
+        "#]],
+    );
+
+    check(
+        r#"unsafe extern { pub safe $0 }"#,
+        expect![[r#"
+            kw fn
+            kw static
+        "#]],
+    );
+
+    check(
+        r#"unsafe extern { pub unsafe $0 }"#,
+        expect![[r#"
+            kw fn
+            kw static
+        "#]],
     )
 }

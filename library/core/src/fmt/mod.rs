@@ -4,13 +4,10 @@
 
 use crate::cell::{Cell, Ref, RefCell, RefMut, SyncUnsafeCell, UnsafeCell};
 use crate::char::EscapeDebugExtArgs;
-use crate::iter;
 use crate::marker::PhantomData;
-use crate::mem;
 use crate::num::fmt as numfmt;
 use crate::ops::Deref;
-use crate::result;
-use crate::str;
+use crate::{iter, mem, result, str};
 
 mod builders;
 #[cfg(not(no_fp_fmt_parse))]
@@ -38,6 +35,8 @@ pub enum Alignment {
 
 #[stable(feature = "debug_builders", since = "1.2.0")]
 pub use self::builders::{DebugList, DebugMap, DebugSet, DebugStruct, DebugTuple};
+#[unstable(feature = "debug_closure_helpers", issue = "117729")]
+pub use self::builders::{FromFn, from_fn};
 
 /// The type returned by formatter methods.
 ///
@@ -69,14 +68,24 @@ pub type Result = result::Result<(), Error>;
 /// The error type which is returned from formatting a message into a stream.
 ///
 /// This type does not support transmission of an error other than that an error
-/// occurred. Any extra information must be arranged to be transmitted through
-/// some other means.
+/// occurred. This is because, despite the existence of this error,
+/// string formatting is considered an infallible operation.
+/// `fmt()` implementors should not return this `Error` unless they received it from their
+/// [`Formatter`]. The only time your code should create a new instance of this
+/// error is when implementing `fmt::Write`, in order to cancel the formatting operation when
+/// writing to the underlying stream fails.
 ///
-/// An important thing to remember is that the type `fmt::Error` should not be
+/// Any extra information must be arranged to be transmitted through some other means,
+/// such as storing it in a field to be consulted after the formatting operation has been
+/// cancelled. (For example, this is how [`std::io::Write::write_fmt()`] propagates IO errors
+/// during writing.)
+///
+/// This type, `fmt::Error`, should not be
 /// confused with [`std::io::Error`] or [`std::error::Error`], which you may also
 /// have in scope.
 ///
 /// [`std::io::Error`]: ../../std/io/struct.Error.html
+/// [`std::io::Write::write_fmt()`]: ../../std/io/trait.Write.html#method.write_fmt
 /// [`std::error::Error`]: ../../std/error/trait.Error.html
 ///
 /// # Examples
@@ -112,11 +121,13 @@ pub trait Write {
     ///
     /// # Errors
     ///
-    /// This function will return an instance of [`Error`] on error.
+    /// This function will return an instance of [`std::fmt::Error`][Error] on error.
     ///
-    /// The purpose of std::fmt::Error is to abort the formatting operation when the underlying
-    /// destination encounters some error preventing it from accepting more text; it should
-    /// generally be propagated rather than handled, at least when implementing formatting traits.
+    /// The purpose of that error is to abort the formatting operation when the underlying
+    /// destination encounters some error preventing it from accepting more text;
+    /// in particular, it does not communicate any information about *what* error occurred.
+    /// It should generally be propagated rather than handled, at least when implementing
+    /// formatting traits.
     ///
     /// # Examples
     ///
@@ -188,8 +199,36 @@ pub trait Write {
     /// assert_eq!(&buf, "world");
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    fn write_fmt(mut self: &mut Self, args: Arguments<'_>) -> Result {
-        write(&mut self, args)
+    fn write_fmt(&mut self, args: Arguments<'_>) -> Result {
+        // We use a specialization for `Sized` types to avoid an indirection
+        // through `&mut self`
+        trait SpecWriteFmt {
+            fn spec_write_fmt(self, args: Arguments<'_>) -> Result;
+        }
+
+        impl<W: Write + ?Sized> SpecWriteFmt for &mut W {
+            #[inline]
+            default fn spec_write_fmt(mut self, args: Arguments<'_>) -> Result {
+                if let Some(s) = args.as_statically_known_str() {
+                    self.write_str(s)
+                } else {
+                    write(&mut self, args)
+                }
+            }
+        }
+
+        impl<W: Write> SpecWriteFmt for &mut W {
+            #[inline]
+            fn spec_write_fmt(self, args: Arguments<'_>) -> Result {
+                if let Some(s) = args.as_statically_known_str() {
+                    self.write_str(s)
+                } else {
+                    write(self, args)
+                }
+            }
+        }
+
+        self.spec_write_fmt(args)
     }
 }
 
@@ -219,6 +258,7 @@ impl<W: Write + ?Sized> Write for &mut W {
 /// documentation of the methods defined on `Formatter` below.
 #[allow(missing_debug_implementations)]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_diagnostic_item = "Formatter"]
 pub struct Formatter<'a> {
     flags: u32,
     fill: char,
@@ -294,24 +334,23 @@ pub struct Arguments<'a> {
 impl<'a> Arguments<'a> {
     #[inline]
     #[rustc_const_unstable(feature = "const_fmt_arguments_new", issue = "none")]
-    pub const fn new_const(pieces: &'a [&'static str]) -> Self {
-        if pieces.len() > 1 {
-            panic!("invalid args");
-        }
+    pub const fn new_const<const N: usize>(pieces: &'a [&'static str; N]) -> Self {
+        const { assert!(N <= 1) };
         Arguments { pieces, fmt: None, args: &[] }
     }
 
     /// When using the format_args!() macro, this function is used to generate the
     /// Arguments structure.
     #[inline]
-    pub fn new_v1(pieces: &'a [&'static str], args: &'a [rt::Argument<'a>]) -> Arguments<'a> {
-        if pieces.len() < args.len() || pieces.len() > args.len() + 1 {
-            panic!("invalid args");
-        }
+    pub fn new_v1<const P: usize, const A: usize>(
+        pieces: &'a [&'static str; P],
+        args: &'a [rt::Argument<'a>; A],
+    ) -> Arguments<'a> {
+        const { assert!(P >= A && P <= A + 1, "invalid args") }
         Arguments { pieces, fmt: None, args }
     }
 
-    /// This function is used to specify nonstandard formatting parameters.
+    /// Specifies nonstandard formatting parameters.
     ///
     /// An `rt::UnsafeArg` is required because the following invariants must be held
     /// in order for this function to be safe:
@@ -353,7 +392,7 @@ impl<'a> Arguments<'a> {
 }
 
 impl<'a> Arguments<'a> {
-    /// Get the formatted string, if it has no arguments to be formatted at runtime.
+    /// Gets the formatted string, if it has no arguments to be formatted at runtime.
     ///
     /// This can be used to avoid allocations in some cases.
     ///
@@ -406,7 +445,21 @@ impl<'a> Arguments<'a> {
             _ => None,
         }
     }
+
+    /// Same as [`Arguments::as_str`], but will only return `Some(s)` if it can be determined at compile time.
+    #[must_use]
+    #[inline]
+    fn as_statically_known_str(&self) -> Option<&'static str> {
+        let s = self.as_str();
+        if core::intrinsics::is_val_statically_known(s.is_some()) { s } else { None }
+    }
 }
+
+// Manually implementing these results in better error messages.
+#[stable(feature = "rust1", since = "1.0.0")]
+impl !Send for Arguments<'_> {}
+#[stable(feature = "rust1", since = "1.0.0")]
+impl !Sync for Arguments<'_> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Debug for Arguments<'_> {
@@ -460,7 +513,10 @@ impl Display for Arguments<'_> {
 ///
 /// let origin = Point { x: 0, y: 0 };
 ///
-/// assert_eq!(format!("The origin is: {origin:?}"), "The origin is: Point { x: 0, y: 0 }");
+/// assert_eq!(
+///     format!("The origin is: {origin:?}"),
+///     "The origin is: Point { x: 0, y: 0 }",
+/// );
 /// ```
 ///
 /// Manually implementing:
@@ -484,7 +540,10 @@ impl Display for Arguments<'_> {
 ///
 /// let origin = Point { x: 0, y: 0 };
 ///
-/// assert_eq!(format!("The origin is: {origin:?}"), "The origin is: Point { x: 0, y: 0 }");
+/// assert_eq!(
+///     format!("The origin is: {origin:?}"),
+///     "The origin is: Point { x: 0, y: 0 }",
+/// );
 /// ```
 ///
 /// There are a number of helper methods on the [`Formatter`] struct to help you with manual
@@ -525,11 +584,11 @@ impl Display for Arguments<'_> {
 ///
 /// let origin = Point { x: 0, y: 0 };
 ///
-/// assert_eq!(format!("The origin is: {origin:#?}"),
-/// "The origin is: Point {
+/// let expected = "The origin is: Point {
 ///     x: 0,
 ///     y: 0,
-/// }");
+/// }";
+/// assert_eq!(format!("The origin is: {origin:#?}"), expected);
 /// ```
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -546,7 +605,7 @@ impl Display for Arguments<'_> {
 #[rustc_diagnostic_item = "Debug"]
 #[rustc_trivial_field_reads]
 pub trait Debug {
-    /// Formats the value using the given formatter.
+    #[doc = include_str!("fmt_trait_method_doc.md")]
     ///
     /// # Examples
     ///
@@ -609,6 +668,23 @@ pub use macros::Debug;
 /// [tostring]: ../../std/string/trait.ToString.html
 /// [tostring_function]: ../../std/string/trait.ToString.html#tymethod.to_string
 ///
+/// # Internationalization
+///
+/// Because a type can only have one `Display` implementation, it is often preferable
+/// to only implement `Display` when there is a single most "obvious" way that
+/// values can be formatted as text. This could mean formatting according to the
+/// "invariant" culture and "undefined" locale, or it could mean that the type
+/// display is designed for a specific culture/locale, such as developer logs.
+///
+/// If not all values have a justifiably canonical textual format or if you want
+/// to support alternative formats not covered by the standard set of possible
+/// [formatting traits], the most flexible approach is display adapters: methods
+/// like [`str::escape_default`] or [`Path::display`] which create a wrapper
+/// implementing `Display` to output the specific display format.
+///
+/// [formatting traits]: ../../std/fmt/index.html#formatting-traits
+/// [`Path::display`]: ../../std/path/struct.Path.html#method.display
+///
 /// # Examples
 ///
 /// Implementing `Display` on a type:
@@ -646,7 +722,7 @@ pub use macros::Debug;
 #[rustc_diagnostic_item = "Display"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Display {
-    /// Formats the value using the given formatter.
+    #[doc = include_str!("fmt_trait_method_doc.md")]
     ///
     /// # Examples
     ///
@@ -664,8 +740,10 @@ pub trait Display {
     ///     }
     /// }
     ///
-    /// assert_eq!("(1.987, 2.983)",
-    ///            format!("{}", Position { longitude: 1.987, latitude: 2.983, }));
+    /// assert_eq!(
+    ///     "(1.987, 2.983)",
+    ///     format!("{}", Position { longitude: 1.987, latitude: 2.983, }),
+    /// );
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
@@ -720,7 +798,7 @@ pub trait Display {
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Octal {
-    /// Formats the value using the given formatter.
+    #[doc = include_str!("fmt_trait_method_doc.md")]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }
@@ -771,13 +849,15 @@ pub trait Octal {
 /// assert_eq!(format!("l as binary is: {l:b}"), "l as binary is: 1101011");
 ///
 /// assert_eq!(
-///     format!("l as binary is: {l:#032b}"),
-///     "l as binary is: 0b000000000000000000000001101011"
+///     // Note that the `0b` prefix added by `#` is included in the total width, so we
+///     // need to add two to correctly display all 32 bits.
+///     format!("l as binary is: {l:#034b}"),
+///     "l as binary is: 0b00000000000000000000000001101011"
 /// );
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Binary {
-    /// Formats the value using the given formatter.
+    #[doc = include_str!("fmt_trait_method_doc.md")]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }
@@ -801,10 +881,10 @@ pub trait Binary {
 /// Basic usage with `i32`:
 ///
 /// ```
-/// let x = 42; // 42 is '2a' in hex
+/// let y = 42; // 42 is '2a' in hex
 ///
-/// assert_eq!(format!("{x:x}"), "2a");
-/// assert_eq!(format!("{x:#x}"), "0x2a");
+/// assert_eq!(format!("{y:x}"), "2a");
+/// assert_eq!(format!("{y:#x}"), "0x2a");
 ///
 /// assert_eq!(format!("{:x}", -16), "fffffff0");
 /// ```
@@ -832,7 +912,7 @@ pub trait Binary {
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait LowerHex {
-    /// Formats the value using the given formatter.
+    #[doc = include_str!("fmt_trait_method_doc.md")]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }
@@ -856,10 +936,10 @@ pub trait LowerHex {
 /// Basic usage with `i32`:
 ///
 /// ```
-/// let x = 42; // 42 is '2A' in hex
+/// let y = 42; // 42 is '2A' in hex
 ///
-/// assert_eq!(format!("{x:X}"), "2A");
-/// assert_eq!(format!("{x:#X}"), "0x2A");
+/// assert_eq!(format!("{y:X}"), "2A");
+/// assert_eq!(format!("{y:#X}"), "0x2A");
 ///
 /// assert_eq!(format!("{:X}", -16), "FFFFFFF0");
 /// ```
@@ -887,7 +967,7 @@ pub trait LowerHex {
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait UpperHex {
-    /// Formats the value using the given formatter.
+    #[doc = include_str!("fmt_trait_method_doc.md")]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }
@@ -895,9 +975,17 @@ pub trait UpperHex {
 /// `p` formatting.
 ///
 /// The `Pointer` trait should format its output as a memory location. This is commonly presented
-/// as hexadecimal.
+/// as hexadecimal. For more information on formatters, see [the module-level documentation][module].
 ///
-/// For more information on formatters, see [the module-level documentation][module].
+/// Printing of pointers is not a reliable way to discover how Rust programs are implemented.
+/// The act of reading an address changes the program itself, and may change how the data is represented
+/// in memory, and may affect which optimizations are applied to the code.
+///
+/// The printed pointer values are not guaranteed to be stable nor unique identifiers of objects.
+/// Rust allows moving values to different memory locations, and may reuse the same memory locations
+/// for different purposes.
+///
+/// There is no guarantee that the printed value can be converted back to a pointer.
 ///
 /// [module]: ../../std/fmt/index.html
 ///
@@ -938,7 +1026,7 @@ pub trait UpperHex {
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_diagnostic_item = "Pointer"]
 pub trait Pointer {
-    /// Formats the value using the given formatter.
+    #[doc = include_str!("fmt_trait_method_doc.md")]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }
@@ -989,7 +1077,7 @@ pub trait Pointer {
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait LowerExp {
-    /// Formats the value using the given formatter.
+    #[doc = include_str!("fmt_trait_method_doc.md")]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }
@@ -1040,13 +1128,13 @@ pub trait LowerExp {
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait UpperExp {
-    /// Formats the value using the given formatter.
+    #[doc = include_str!("fmt_trait_method_doc.md")]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }
 
-/// The `write` function takes an output stream, and an `Arguments` struct
-/// that can be precompiled with the `format_args!` macro.
+/// Takes an output stream and an `Arguments` struct that can be precompiled with
+/// the `format_args!` macro.
 ///
 /// The arguments will be formatted according to the specified format string
 /// into the output stream provided.
@@ -1091,7 +1179,12 @@ pub fn write(output: &mut dyn Write, args: Arguments<'_>) -> Result {
                 if !piece.is_empty() {
                     formatter.buf.write_str(*piece)?;
                 }
-                arg.fmt(&mut formatter)?;
+
+                // SAFETY: There are no formatting parameters and hence no
+                // count arguments.
+                unsafe {
+                    arg.fmt(&mut formatter)?;
+                }
                 idx += 1;
             }
         }
@@ -1139,7 +1232,8 @@ unsafe fn run(fmt: &mut Formatter<'_>, arg: &rt::Placeholder, args: &[rt::Argume
     let value = unsafe { args.get_unchecked(arg.position) };
 
     // Then actually do some printing
-    value.fmt(fmt)
+    // SAFETY: this is a placeholder argument.
+    unsafe { value.fmt(fmt) }
 }
 
 unsafe fn getcount(args: &[rt::Argument<'_>], cnt: &rt::Count) -> Option<usize> {
@@ -1167,7 +1261,7 @@ impl PostPadding {
         PostPadding { fill, padding }
     }
 
-    /// Write this post padding.
+    /// Writes this post padding.
     pub(crate) fn write(self, f: &mut Formatter<'_>) -> Result {
         for _ in 0..self.padding {
             f.buf.write_char(self.fill)?;
@@ -1308,9 +1402,10 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    /// This function takes a string slice and emits it to the internal buffer
-    /// after applying the relevant formatting flags specified. The flags
-    /// recognized for generic strings are:
+    /// Takes a string slice and emits it to the internal buffer after applying
+    /// the relevant formatting flags specified.
+    ///
+    /// The flags recognized for generic strings are:
     ///
     /// * width - the minimum width of what to emit
     /// * fill/align - what to emit and where to emit it if the string
@@ -1384,9 +1479,10 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    /// Write the pre-padding and return the unwritten post-padding. Callers are
-    /// responsible for ensuring post-padding is written after the thing that is
-    /// being padded.
+    /// Writes the pre-padding and returns the unwritten post-padding.
+    ///
+    /// Callers are responsible for ensuring post-padding is written after the
+    /// thing that is being padded.
     pub(crate) fn padding(
         &mut self,
         padding: usize,
@@ -1413,6 +1509,7 @@ impl<'a> Formatter<'a> {
     }
 
     /// Takes the formatted parts and applies the padding.
+    ///
     /// Assumes that the caller already has rendered the parts with required precision,
     /// so that `self.precision` can be ignored.
     ///
@@ -1537,6 +1634,11 @@ impl<'a> Formatter<'a> {
         self.buf.write_str(data)
     }
 
+    /// Glue for usage of the [`write!`] macro with implementors of this trait.
+    ///
+    /// This method should generally not be invoked manually, but rather through
+    /// the [`write!`] macro itself.
+    ///
     /// Writes some formatted information into this instance.
     ///
     /// # Examples
@@ -1556,11 +1658,16 @@ impl<'a> Formatter<'a> {
     /// assert_eq!(format!("{:0>8}", Foo(2)), "Foo 2");
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[inline]
     pub fn write_fmt(&mut self, fmt: Arguments<'_>) -> Result {
-        write(self.buf, fmt)
+        if let Some(s) = fmt.as_statically_known_str() {
+            self.buf.write_str(s)
+        } else {
+            write(self.buf, fmt)
+        }
     }
 
-    /// Flags for formatting
+    /// Returns flags for formatting.
     #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     #[deprecated(
@@ -1572,7 +1679,7 @@ impl<'a> Formatter<'a> {
         self.flags
     }
 
-    /// Character used as 'fill' whenever there is alignment.
+    /// Returns the character used as 'fill' whenever there is alignment.
     ///
     /// # Examples
     ///
@@ -1605,7 +1712,7 @@ impl<'a> Formatter<'a> {
         self.fill
     }
 
-    /// Flag indicating what form of alignment was requested.
+    /// Returns a flag indicating what form of alignment was requested.
     ///
     /// # Examples
     ///
@@ -1645,7 +1752,7 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    /// Optionally specified integer width that the output should be.
+    /// Returns the optionally specified integer width that the output should be.
     ///
     /// # Examples
     ///
@@ -1675,8 +1782,8 @@ impl<'a> Formatter<'a> {
         self.width
     }
 
-    /// Optionally specified precision for numeric types. Alternatively, the
-    /// maximum width for string types.
+    /// Returns the optionally specified precision for numeric types.
+    /// Alternatively, the maximum width for string types.
     ///
     /// # Examples
     ///
@@ -1872,8 +1979,9 @@ impl<'a> Formatter<'a> {
         builders::debug_struct_new(self, name)
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// `debug_struct_fields_finish` is more general, but this is faster for 1 field.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. `debug_struct_fields_finish` is more general, but this is
+    /// faster for 1 field.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_struct_field1_finish<'b>(
@@ -1887,8 +1995,9 @@ impl<'a> Formatter<'a> {
         builder.finish()
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// `debug_struct_fields_finish` is more general, but this is faster for 2 fields.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. `debug_struct_fields_finish` is more general, but this is
+    /// faster for 2 fields.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_struct_field2_finish<'b>(
@@ -1905,8 +2014,9 @@ impl<'a> Formatter<'a> {
         builder.finish()
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// `debug_struct_fields_finish` is more general, but this is faster for 3 fields.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. `debug_struct_fields_finish` is more general, but this is
+    /// faster for 3 fields.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_struct_field3_finish<'b>(
@@ -1926,8 +2036,9 @@ impl<'a> Formatter<'a> {
         builder.finish()
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// `debug_struct_fields_finish` is more general, but this is faster for 4 fields.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. `debug_struct_fields_finish` is more general, but this is
+    /// faster for 4 fields.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_struct_field4_finish<'b>(
@@ -1950,8 +2061,9 @@ impl<'a> Formatter<'a> {
         builder.finish()
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// `debug_struct_fields_finish` is more general, but this is faster for 5 fields.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. `debug_struct_fields_finish` is more general, but this is
+    /// faster for 5 fields.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_struct_field5_finish<'b>(
@@ -1977,7 +2089,7 @@ impl<'a> Formatter<'a> {
         builder.finish()
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller binaries.
     /// For the cases not covered by `debug_struct_field[12345]_finish`.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
@@ -2026,8 +2138,9 @@ impl<'a> Formatter<'a> {
         builders::debug_tuple_new(self, name)
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// `debug_tuple_fields_finish` is more general, but this is faster for 1 field.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. `debug_tuple_fields_finish` is more general, but this is faster
+    /// for 1 field.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_tuple_field1_finish<'b>(&'b mut self, name: &str, value1: &dyn Debug) -> Result {
@@ -2036,8 +2149,9 @@ impl<'a> Formatter<'a> {
         builder.finish()
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// `debug_tuple_fields_finish` is more general, but this is faster for 2 fields.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. `debug_tuple_fields_finish` is more general, but this is faster
+    /// for 2 fields.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_tuple_field2_finish<'b>(
@@ -2052,8 +2166,9 @@ impl<'a> Formatter<'a> {
         builder.finish()
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// `debug_tuple_fields_finish` is more general, but this is faster for 3 fields.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. `debug_tuple_fields_finish` is more general, but this is faster
+    /// for 3 fields.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_tuple_field3_finish<'b>(
@@ -2070,8 +2185,9 @@ impl<'a> Formatter<'a> {
         builder.finish()
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// `debug_tuple_fields_finish` is more general, but this is faster for 4 fields.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. `debug_tuple_fields_finish` is more general, but this is faster
+    /// for 4 fields.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_tuple_field4_finish<'b>(
@@ -2090,8 +2206,9 @@ impl<'a> Formatter<'a> {
         builder.finish()
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// `debug_tuple_fields_finish` is more general, but this is faster for 5 fields.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. `debug_tuple_fields_finish` is more general, but this is faster
+    /// for 5 fields.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_tuple_field5_finish<'b>(
@@ -2112,8 +2229,8 @@ impl<'a> Formatter<'a> {
         builder.finish()
     }
 
-    /// Used to shrink `derive(Debug)` code, for faster compilation and smaller binaries.
-    /// For the cases not covered by `debug_tuple_field[12345]_finish`.
+    /// Shrinks `derive(Debug)` code, for faster compilation and smaller
+    /// binaries. For the cases not covered by `debug_tuple_field[12345]_finish`.
     #[doc(hidden)]
     #[unstable(feature = "fmt_helpers_for_derive", issue = "none")]
     pub fn debug_tuple_fields_finish<'b>(
@@ -2246,8 +2363,13 @@ impl Write for Formatter<'_> {
         self.buf.write_char(c)
     }
 
+    #[inline]
     fn write_fmt(&mut self, args: Arguments<'_>) -> Result {
-        write(self.buf, args)
+        if let Some(s) = args.as_statically_known_str() {
+            self.buf.write_str(s)
+        } else {
+            write(self.buf, args)
+        }
     }
 }
 
@@ -2312,23 +2434,47 @@ impl Display for bool {
 impl Debug for str {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         f.write_char('"')?;
-        let mut from = 0;
-        for (i, c) in self.char_indices() {
-            let esc = c.escape_debug_ext(EscapeDebugExtArgs {
-                escape_grapheme_extended: true,
-                escape_single_quote: false,
-                escape_double_quote: true,
-            });
-            // If char needs escaping, flush backlog so far and write, else skip
-            if esc.len() != 1 {
-                f.write_str(&self[from..i])?;
-                for c in esc {
-                    f.write_char(c)?;
-                }
-                from = i + c.len_utf8();
-            }
+
+        // substring we know is printable
+        let mut printable_range = 0..0;
+
+        fn needs_escape(b: u8) -> bool {
+            b > 0x7E || b < 0x20 || b == b'\\' || b == b'"'
         }
-        f.write_str(&self[from..])?;
+
+        // the loop here first skips over runs of printable ASCII as a fast path.
+        // other chars (unicode, or ASCII that needs escaping) are then handled per-`char`.
+        let mut rest = self;
+        while rest.len() > 0 {
+            let Some(non_printable_start) = rest.as_bytes().iter().position(|&b| needs_escape(b))
+            else {
+                printable_range.end += rest.len();
+                break;
+            };
+
+            printable_range.end += non_printable_start;
+            // SAFETY: the position was derived from an iterator, so is known to be within bounds, and at a char boundary
+            rest = unsafe { rest.get_unchecked(non_printable_start..) };
+
+            let mut chars = rest.chars();
+            if let Some(c) = chars.next() {
+                let esc = c.escape_debug_ext(EscapeDebugExtArgs {
+                    escape_grapheme_extended: true,
+                    escape_single_quote: false,
+                    escape_double_quote: true,
+                });
+                if esc.len() != 1 {
+                    f.write_str(&self[printable_range.clone()])?;
+                    Display::fmt(&esc, f)?;
+                    printable_range.start = printable_range.end + c.len_utf8();
+                }
+                printable_range.end += c.len_utf8();
+            }
+            rest = chars.as_str();
+        }
+
+        f.write_str(&self[printable_range])?;
+
         f.write_char('"')
     }
 }
@@ -2344,13 +2490,12 @@ impl Display for str {
 impl Debug for char {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         f.write_char('\'')?;
-        for c in self.escape_debug_ext(EscapeDebugExtArgs {
+        let esc = self.escape_debug_ext(EscapeDebugExtArgs {
             escape_grapheme_extended: true,
             escape_single_quote: true,
             escape_double_quote: false,
-        }) {
-            f.write_char(c)?
-        }
+        });
+        Display::fmt(&esc, f)?;
         f.write_char('\'')
     }
 }
@@ -2369,13 +2514,13 @@ impl Display for char {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: ?Sized> Pointer for *const T {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        // Cast is needed here because `.expose_addr()` requires `T: Sized`.
-        pointer_fmt_inner((*self as *const ()).expose_addr(), f)
+        pointer_fmt_inner(self.expose_provenance(), f)
     }
 }
 
-/// Since the formatting will be identical for all pointer types, use a non-monomorphized
-/// implementation for the actual formatting to reduce the amount of codegen work needed.
+/// Since the formatting will be identical for all pointer types, uses a
+/// non-monomorphized implementation for the actual formatting to reduce the
+/// amount of codegen work needed.
 ///
 /// This uses `ptr_addr: usize` and not `ptr: *const ()` to be able to use this for
 /// `fn(...) -> ...` without using [problematic] "Oxford Casts".
@@ -2521,22 +2666,12 @@ impl<T: Copy + Debug> Debug for Cell<T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: ?Sized + Debug> Debug for RefCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        let mut d = f.debug_struct("RefCell");
         match self.try_borrow() {
-            Ok(borrow) => f.debug_struct("RefCell").field("value", &borrow).finish(),
-            Err(_) => {
-                // The RefCell is mutably borrowed so we can't look at its value
-                // here. Show a placeholder instead.
-                struct BorrowedPlaceholder;
-
-                impl Debug for BorrowedPlaceholder {
-                    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-                        f.write_str("<borrowed>")
-                    }
-                }
-
-                f.debug_struct("RefCell").field("value", &BorrowedPlaceholder).finish()
-            }
-        }
+            Ok(borrow) => d.field("value", &borrow),
+            Err(_) => d.field("value", &format_args!("<borrowed>")),
+        };
+        d.finish()
     }
 }
 

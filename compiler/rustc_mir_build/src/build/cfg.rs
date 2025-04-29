@@ -1,8 +1,10 @@
 //! Routines for manipulating the control-flow graph.
 
-use crate::build::CFG;
 use rustc_middle::mir::*;
 use rustc_middle::ty::TyCtxt;
+use tracing::debug;
+
+use crate::build::CFG;
 
 impl<'tcx> CFG<'tcx> {
     pub(crate) fn block_data(&self, blk: BasicBlock) -> &BasicBlockData<'tcx> {
@@ -38,10 +40,10 @@ impl<'tcx> CFG<'tcx> {
         place: Place<'tcx>,
         rvalue: Rvalue<'tcx>,
     ) {
-        self.push(
-            block,
-            Statement { source_info, kind: StatementKind::Assign(Box::new((place, rvalue))) },
-        );
+        self.push(block, Statement {
+            source_info,
+            kind: StatementKind::Assign(Box::new((place, rvalue))),
+        });
     }
 
     pub(crate) fn push_assign_constant(
@@ -49,7 +51,7 @@ impl<'tcx> CFG<'tcx> {
         block: BasicBlock,
         source_info: SourceInfo,
         temp: Place<'tcx>,
-        constant: Constant<'tcx>,
+        constant: ConstOperand<'tcx>,
     ) {
         self.push_assign(
             block,
@@ -70,10 +72,10 @@ impl<'tcx> CFG<'tcx> {
             block,
             source_info,
             place,
-            Rvalue::Use(Operand::Constant(Box::new(Constant {
+            Rvalue::Use(Operand::Constant(Box::new(ConstOperand {
                 span: source_info.span,
                 user_ty: None,
-                literal: ConstantKind::zero_sized(tcx.types.unit),
+                const_: Const::zero_sized(tcx.types.unit),
             }))),
         );
     }
@@ -97,6 +99,17 @@ impl<'tcx> CFG<'tcx> {
         place: Place<'tcx>,
     ) {
         let kind = StatementKind::PlaceMention(Box::new(place));
+        let stmt = Statement { source_info, kind };
+        self.push(block, stmt);
+    }
+
+    /// Adds a dummy statement whose only role is to associate a span with its
+    /// enclosing block for the purposes of coverage instrumentation.
+    ///
+    /// This results in more accurate coverage reports for certain kinds of
+    /// syntax (e.g. `continue` or `if !`) that would otherwise not appear in MIR.
+    pub(crate) fn push_coverage_span_marker(&mut self, block: BasicBlock, source_info: SourceInfo) {
+        let kind = StatementKind::Coverage(coverage::CoverageKind::SpanMarker);
         let stmt = Statement { source_info, kind };
         self.push(block, stmt);
     }

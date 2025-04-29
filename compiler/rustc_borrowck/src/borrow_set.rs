@@ -1,17 +1,18 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
-use crate::path_utils::allow_two_phase_borrow;
-use crate::place_ext::PlaceExt;
-use crate::BorrowIndex;
-use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
-use rustc_index::bit_set::BitSet;
-use rustc_middle::mir::traversal;
-use rustc_middle::mir::visit::{MutatingUseContext, NonUseContext, PlaceContext, Visitor};
-use rustc_middle::mir::{self, Body, Local, Location};
-use rustc_middle::ty::{RegionVid, TyCtxt};
-use rustc_mir_dataflow::move_paths::MoveData;
 use std::fmt;
 use std::ops::Index;
+
+use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
+use rustc_index::bit_set::BitSet;
+use rustc_middle::mir::visit::{MutatingUseContext, NonUseContext, PlaceContext, Visitor};
+use rustc_middle::mir::{self, Body, Local, Location, traversal};
+use rustc_middle::span_bug;
+use rustc_middle::ty::{RegionVid, TyCtxt};
+use rustc_mir_dataflow::move_paths::MoveData;
+use tracing::debug;
+
+use crate::BorrowIndex;
+use crate::path_utils::allow_two_phase_borrow;
+use crate::place_ext::PlaceExt;
 
 pub struct BorrowSet<'tcx> {
     /// The fundamental map relating bitvector indexes to the borrows
@@ -71,7 +72,8 @@ impl<'tcx> fmt::Display for BorrowData<'tcx> {
     fn fmt(&self, w: &mut fmt::Formatter<'_>) -> fmt::Result {
         let kind = match self.kind {
             mir::BorrowKind::Shared => "",
-            mir::BorrowKind::Shallow => "shallow ",
+            mir::BorrowKind::Fake(mir::FakeBorrowKind::Deep) => "fake ",
+            mir::BorrowKind::Fake(mir::FakeBorrowKind::Shallow) => "fake shallow ",
             mir::BorrowKind::Mut { kind: mir::MutBorrowKind::ClosureCapture } => "uniq ",
             // FIXME: differentiate `TwoPhaseBorrow`
             mir::BorrowKind::Mut {
@@ -107,12 +109,10 @@ impl LocalsStateAtExit {
             LocalsStateAtExit::AllAreInvalidated
         } else {
             let mut has_storage_dead = HasStorageDead(BitSet::new_empty(body.local_decls.len()));
-            has_storage_dead.visit_body(&body);
+            has_storage_dead.visit_body(body);
             let mut has_storage_dead_or_moved = has_storage_dead.0;
             for move_out in &move_data.moves {
-                if let Some(index) = move_data.base_local(move_out.path) {
-                    has_storage_dead_or_moved.insert(index);
-                }
+                has_storage_dead_or_moved.insert(move_data.base_local(move_out.path));
             }
             LocalsStateAtExit::SomeAreInvalidated { has_storage_dead_or_moved }
         }
@@ -128,7 +128,7 @@ impl<'tcx> BorrowSet<'tcx> {
     ) -> Self {
         let mut visitor = GatherBorrows {
             tcx,
-            body: &body,
+            body,
             location_map: Default::default(),
             activation_map: Default::default(),
             local_map: Default::default(),
@@ -140,7 +140,7 @@ impl<'tcx> BorrowSet<'tcx> {
             ),
         };
 
-        for (block, block_data) in traversal::preorder(&body) {
+        for (block, block_data) in traversal::preorder(body) {
             visitor.visit_basic_block_data(block, block_data);
         }
 
@@ -161,7 +161,7 @@ impl<'tcx> BorrowSet<'tcx> {
     }
 
     pub(crate) fn indices(&self) -> impl Iterator<Item = BorrowIndex> {
-        BorrowIndex::from_usize(0)..BorrowIndex::from_usize(self.len())
+        BorrowIndex::ZERO..BorrowIndex::from_usize(self.len())
     }
 
     pub(crate) fn iter_enumerated(&self) -> impl Iterator<Item = (BorrowIndex, &BorrowData<'tcx>)> {

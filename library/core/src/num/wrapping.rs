@@ -1,10 +1,10 @@
 //! Definitions of `Wrapping<T>`.
 
 use crate::fmt;
-use crate::ops::{Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign};
-use crate::ops::{BitXor, BitXorAssign, Div, DivAssign};
-use crate::ops::{Mul, MulAssign, Neg, Not, Rem, RemAssign};
-use crate::ops::{Shl, ShlAssign, Shr, ShrAssign, Sub, SubAssign};
+use crate::ops::{
+    Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Div, DivAssign,
+    Mul, MulAssign, Neg, Not, Rem, RemAssign, Shl, ShlAssign, Shr, ShrAssign, Sub, SubAssign,
+};
 
 /// Provides intentionally-wrapped arithmetic on `T`.
 ///
@@ -39,6 +39,7 @@ use crate::ops::{Shl, ShlAssign, Shr, ShrAssign, Sub, SubAssign};
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, Hash)]
 #[repr(transparent)]
+#[rustc_diagnostic_item = "Wrapping"]
 pub struct Wrapping<T>(#[stable(feature = "rust1", since = "1.0.0")] pub T);
 
 #[stable(feature = "rust1", since = "1.0.0")]

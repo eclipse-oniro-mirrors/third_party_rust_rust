@@ -1,16 +1,17 @@
 use hir::TypeInfo;
-use stdx::format_to;
+use ide_db::syntax_helpers::suggest_name;
 use syntax::{
-    ast::{self, AstNode},
-    NodeOrToken,
-    SyntaxKind::{
-        BLOCK_EXPR, BREAK_EXPR, CLOSURE_EXPR, COMMENT, LOOP_EXPR, MATCH_ARM, MATCH_GUARD,
-        PATH_EXPR, RETURN_EXPR,
+    ast::{
+        self, edit::IndentLevel, edit_in_place::Indent, make, syntax_factory::SyntaxFactory,
+        AstNode,
     },
-    SyntaxNode,
+    syntax_editor::Position,
+    NodeOrToken,
+    SyntaxKind::{BLOCK_EXPR, BREAK_EXPR, COMMENT, LOOP_EXPR, MATCH_GUARD, PATH_EXPR, RETURN_EXPR},
+    SyntaxNode, T,
 };
 
-use crate::{utils::suggest_name, AssistContext, AssistId, AssistKind, Assists};
+use crate::{AssistContext, AssistId, AssistKind, Assists};
 
 // Assist: extract_variable
 //
@@ -24,27 +25,36 @@ use crate::{utils::suggest_name, AssistContext, AssistId, AssistKind, Assists};
 // ->
 // ```
 // fn main() {
-//     let $0var_name = (1 + 2);
+//     let $0var_name = 1 + 2;
 //     var_name * 4;
 // }
 // ```
 pub(crate) fn extract_variable(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
-    if ctx.has_empty_selection() {
-        return None;
-    }
-
-    let node = match ctx.covering_element() {
-        NodeOrToken::Node(it) => it,
-        NodeOrToken::Token(it) if it.kind() == COMMENT => {
-            cov_mark::hit!(extract_var_in_comment_is_not_applicable);
+    let node = if ctx.has_empty_selection() {
+        if let Some(t) = ctx.token_at_offset().find(|it| it.kind() == T![;]) {
+            t.parent().and_then(ast::ExprStmt::cast)?.syntax().clone()
+        } else if let Some(expr) = ctx.find_node_at_offset::<ast::Expr>() {
+            expr.syntax().ancestors().find_map(valid_target_expr)?.syntax().clone()
+        } else {
             return None;
         }
-        NodeOrToken::Token(it) => it.parent()?,
+    } else {
+        match ctx.covering_element() {
+            NodeOrToken::Node(it) => it,
+            NodeOrToken::Token(it) if it.kind() == COMMENT => {
+                cov_mark::hit!(extract_var_in_comment_is_not_applicable);
+                return None;
+            }
+            NodeOrToken::Token(it) => it.parent()?,
+        }
     };
+
     let node = node.ancestors().take_while(|anc| anc.text_range() == node.text_range()).last()?;
+    let range = node.text_range();
+
     let to_extract = node
         .descendants()
-        .take_while(|it| ctx.selection_trimmed().contains_range(it.text_range()))
+        .take_while(|it| range.contains_range(it.text_range()))
         .find_map(valid_target_expr)?;
 
     let ty = ctx.sema.type_of_expr(&to_extract).map(TypeInfo::adjusted);
@@ -53,105 +63,148 @@ pub(crate) fn extract_variable(acc: &mut Assists, ctx: &AssistContext<'_>) -> Op
     }
 
     let parent = to_extract.syntax().parent().and_then(ast::Expr::cast);
-    let needs_adjust = parent
-        .as_ref()
-        .map_or(false, |it| matches!(it, ast::Expr::FieldExpr(_) | ast::Expr::MethodCallExpr(_)));
-
-    let reference_modifier = match ty.filter(|_| needs_adjust) {
-        Some(receiver_type) if receiver_type.is_mutable_reference() => "&mut ",
-        Some(receiver_type) if receiver_type.is_reference() => "&",
-        _ => "",
-    };
-
-    let var_modifier = match parent {
-        Some(ast::Expr::RefExpr(expr)) if expr.mut_token().is_some() => "mut ",
-        _ => "",
-    };
+    // Any expression that autoderefs may need adjustment.
+    let mut needs_adjust = parent.as_ref().map_or(false, |it| match it {
+        ast::Expr::FieldExpr(_)
+        | ast::Expr::MethodCallExpr(_)
+        | ast::Expr::CallExpr(_)
+        | ast::Expr::AwaitExpr(_) => true,
+        ast::Expr::IndexExpr(index) if index.base().as_ref() == Some(&to_extract) => true,
+        _ => false,
+    });
+    let mut to_extract_no_ref = peel_parens(to_extract.clone());
+    let needs_ref = needs_adjust
+        && match &to_extract_no_ref {
+            ast::Expr::FieldExpr(_)
+            | ast::Expr::IndexExpr(_)
+            | ast::Expr::MacroExpr(_)
+            | ast::Expr::ParenExpr(_)
+            | ast::Expr::PathExpr(_) => true,
+            ast::Expr::PrefixExpr(prefix) if prefix.op_kind() == Some(ast::UnaryOp::Deref) => {
+                to_extract_no_ref = prefix.expr()?;
+                needs_adjust = false;
+                false
+            }
+            _ => false,
+        };
 
     let anchor = Anchor::from(&to_extract)?;
-    let indent = anchor.syntax().prev_sibling_or_token()?.as_token()?.clone();
     let target = to_extract.syntax().text_range();
     acc.add(
         AssistId("extract_variable", AssistKind::RefactorExtract),
         "Extract into variable",
         target,
         move |edit| {
-            let field_shorthand =
-                match to_extract.syntax().parent().and_then(ast::RecordExprField::cast) {
-                    Some(field) => field.name_ref(),
-                    None => None,
-                };
+            let field_shorthand = to_extract
+                .syntax()
+                .parent()
+                .and_then(ast::RecordExprField::cast)
+                .filter(|field| field.name_ref().is_some());
 
-            let mut buf = String::new();
+            let (var_name, expr_replace) = match field_shorthand {
+                Some(field) => (field.to_string(), field.syntax().clone()),
+                None => (
+                    suggest_name::for_variable(&to_extract, &ctx.sema),
+                    to_extract.syntax().clone(),
+                ),
+            };
 
-            let var_name = match &field_shorthand {
-                Some(it) => it.to_string(),
-                None => suggest_name::for_variable(&to_extract, &ctx.sema),
+            let make = SyntaxFactory::new();
+            let mut editor = edit.make_editor(&expr_replace);
+
+            let pat_name = make.name(&var_name);
+            let name_expr = make.expr_path(make::ext::ident_path(&var_name));
+
+            if let Some(cap) = ctx.config.snippet_cap {
+                let tabstop = edit.make_tabstop_before(cap);
+                editor.add_annotation(pat_name.syntax().clone(), tabstop);
+            }
+
+            let ident_pat = match parent {
+                Some(ast::Expr::RefExpr(expr)) if expr.mut_token().is_some() => {
+                    make.ident_pat(false, true, pat_name)
+                }
+                _ if needs_adjust
+                    && !needs_ref
+                    && ty.as_ref().is_some_and(|ty| ty.is_mutable_reference()) =>
+                {
+                    make.ident_pat(false, true, pat_name)
+                }
+                _ => make.ident_pat(false, false, pat_name),
             };
-            let expr_range = match &field_shorthand {
-                Some(it) => it.syntax().text_range().cover(to_extract.syntax().text_range()),
-                None => to_extract.syntax().text_range(),
+
+            let to_extract_no_ref = match ty.as_ref().filter(|_| needs_ref) {
+                Some(receiver_type) if receiver_type.is_mutable_reference() => {
+                    make.expr_ref(to_extract_no_ref, true)
+                }
+                Some(receiver_type) if receiver_type.is_reference() => {
+                    make.expr_ref(to_extract_no_ref, false)
+                }
+                _ => to_extract_no_ref,
             };
+
+            let let_stmt = make.let_stmt(ident_pat.into(), None, Some(to_extract_no_ref));
 
             match anchor {
-                Anchor::Before(_) | Anchor::Replace(_) => {
-                    format_to!(buf, "let {var_modifier}{var_name} = {reference_modifier}")
-                }
-                Anchor::WrapInBlock(_) => {
-                    format_to!(buf, "{{ let {var_name} = {reference_modifier}")
-                }
-            };
-            format_to!(buf, "{to_extract}");
+                Anchor::Before(place) => {
+                    let prev_ws = place.prev_sibling_or_token().and_then(|it| it.into_token());
+                    let indent_to = IndentLevel::from_node(&place);
 
-            if let Anchor::Replace(stmt) = anchor {
-                cov_mark::hit!(test_extract_var_expr_stmt);
-                if stmt.semicolon_token().is_none() {
-                    buf.push(';');
-                }
-                match ctx.config.snippet_cap {
-                    Some(cap) => {
-                        let snip = buf.replace(
-                            &format!("let {var_modifier}{var_name}"),
-                            &format!("let {var_modifier}$0{var_name}"),
-                        );
-                        edit.replace_snippet(cap, expr_range, snip)
-                    }
-                    None => edit.replace(expr_range, buf),
-                }
-                return;
-            }
+                    // Adjust ws to insert depending on if this is all inline or on separate lines
+                    let trailing_ws = if prev_ws.is_some_and(|it| it.text().starts_with('\n')) {
+                        format!("\n{indent_to}")
+                    } else {
+                        " ".to_owned()
+                    };
 
-            buf.push(';');
-
-            // We want to maintain the indent level,
-            // but we do not want to duplicate possible
-            // extra newlines in the indent block
-            let text = indent.text();
-            if text.starts_with('\n') {
-                buf.push('\n');
-                buf.push_str(text.trim_start_matches('\n'));
-            } else {
-                buf.push_str(text);
-            }
-
-            edit.replace(expr_range, var_name.clone());
-            let offset = anchor.syntax().text_range().start();
-            match ctx.config.snippet_cap {
-                Some(cap) => {
-                    let snip = buf.replace(
-                        &format!("let {var_modifier}{var_name}"),
-                        &format!("let {var_modifier}$0{var_name}"),
+                    editor.insert_all(
+                        Position::before(place),
+                        vec![
+                            let_stmt.syntax().clone().into(),
+                            make::tokens::whitespace(&trailing_ws).into(),
+                        ],
                     );
-                    edit.insert_snippet(cap, offset, snip)
+
+                    editor.replace(expr_replace, name_expr.syntax());
                 }
-                None => edit.insert(offset, buf),
+                Anchor::Replace(stmt) => {
+                    cov_mark::hit!(test_extract_var_expr_stmt);
+
+                    editor.replace(stmt.syntax(), let_stmt.syntax());
+                }
+                Anchor::WrapInBlock(to_wrap) => {
+                    let indent_to = to_wrap.indent_level();
+
+                    let block = if to_wrap.syntax() == &expr_replace {
+                        // Since `expr_replace` is the same that needs to be wrapped in a block,
+                        // we can just directly replace it with a block
+                        make.block_expr([let_stmt.into()], Some(name_expr))
+                    } else {
+                        // `expr_replace` is a descendant of `to_wrap`, so we just replace it with `name_expr`.
+                        editor.replace(expr_replace, name_expr.syntax());
+                        make.block_expr([let_stmt.into()], Some(to_wrap.clone()))
+                    };
+
+                    editor.replace(to_wrap.syntax(), block.syntax());
+
+                    // fixup indentation of block
+                    block.indent(indent_to);
+                }
             }
 
-            if let Anchor::WrapInBlock(_) = anchor {
-                edit.insert(anchor.syntax().text_range().end(), " }");
-            }
+            editor.add_mappings(make.finish_with_mappings());
+            edit.add_file_edits(ctx.file_id(), editor);
+            edit.rename();
         },
     )
+}
+
+fn peel_parens(mut expr: ast::Expr) -> ast::Expr {
+    while let ast::Expr::ParenExpr(parens) = &expr {
+        let Some(expr_inside) = parens.expr() else { break };
+        expr = expr_inside;
+    }
+    expr
 }
 
 /// Check whether the node is a valid expression which can be extracted to a variable.
@@ -172,7 +225,7 @@ fn valid_target_expr(node: SyntaxNode) -> Option<ast::Expr> {
 enum Anchor {
     Before(SyntaxNode),
     Replace(ast::ExprStmt),
-    WrapInBlock(SyntaxNode),
+    WrapInBlock(ast::Expr),
 }
 
 impl Anchor {
@@ -195,16 +248,16 @@ impl Anchor {
                 }
 
                 if let Some(parent) = node.parent() {
-                    if parent.kind() == CLOSURE_EXPR {
+                    if let Some(parent) = ast::ClosureExpr::cast(parent.clone()) {
                         cov_mark::hit!(test_extract_var_in_closure_no_block);
-                        return Some(Anchor::WrapInBlock(node));
+                        return parent.body().map(Anchor::WrapInBlock);
                     }
-                    if parent.kind() == MATCH_ARM {
+                    if let Some(parent) = ast::MatchArm::cast(parent) {
                         if node.kind() == MATCH_GUARD {
                             cov_mark::hit!(test_extract_var_in_match_guard);
                         } else {
                             cov_mark::hit!(test_extract_var_in_match_arm_no_block);
-                            return Some(Anchor::WrapInBlock(node));
+                            return parent.expr().map(Anchor::WrapInBlock);
                         }
                     }
                 }
@@ -220,13 +273,6 @@ impl Anchor {
                 None
             })
     }
-
-    fn syntax(&self) -> &SyntaxNode {
-        match self {
-            Anchor::Before(it) | Anchor::WrapInBlock(it) => it,
-            Anchor::Replace(stmt) => stmt.syntax(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -234,6 +280,138 @@ mod tests {
     use crate::tests::{check_assist, check_assist_not_applicable, check_assist_target};
 
     use super::*;
+
+    #[test]
+    fn test_extract_var_simple_without_select() {
+        check_assist(
+            extract_variable,
+            r#"
+fn main() -> i32 {
+    if true {
+        1
+    } else {
+        2
+    }$0
+}
+"#,
+            r#"
+fn main() -> i32 {
+    let $0var_name = if true {
+        1
+    } else {
+        2
+    };
+    var_name
+}
+"#,
+        );
+
+        check_assist(
+            extract_variable,
+            r#"
+fn foo() -> i32 { 1 }
+fn main() {
+    foo();$0
+}
+"#,
+            r#"
+fn foo() -> i32 { 1 }
+fn main() {
+    let $0foo = foo();
+}
+"#,
+        );
+
+        check_assist(
+            extract_variable,
+            r#"
+fn main() {
+    let a = Some(2);
+    a.is_some();$0
+}
+"#,
+            r#"
+fn main() {
+    let a = Some(2);
+    let $0is_some = a.is_some();
+}
+"#,
+        );
+
+        check_assist(
+            extract_variable,
+            r#"
+fn main() {
+    "hello"$0;
+}
+"#,
+            r#"
+fn main() {
+    let $0var_name = "hello";
+}
+"#,
+        );
+
+        check_assist(
+            extract_variable,
+            r#"
+fn main() {
+    1  + 2$0;
+}
+"#,
+            r#"
+fn main() {
+    let $0var_name = 1  + 2;
+}
+"#,
+        );
+
+        check_assist(
+            extract_variable,
+            r#"
+fn main() {
+    match () {
+        () if true => 1,
+        _ => 2,
+    };$0
+}
+"#,
+            r#"
+fn main() {
+    let $0var_name = match () {
+        () if true => 1,
+        _ => 2,
+    };
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn test_extract_var_unit_expr_without_select_not_applicable() {
+        check_assist_not_applicable(
+            extract_variable,
+            r#"
+fn foo() {}
+fn main() {
+    foo()$0;
+}
+"#,
+        );
+
+        check_assist_not_applicable(
+            extract_variable,
+            r#"
+fn foo() {
+    let mut i = 3;
+    if i >= 0 {
+        i += 1;
+    } else {
+        i -= 1;
+    }$0
+}"#,
+        );
+    }
 
     #[test]
     fn test_extract_var_simple() {
@@ -361,7 +539,10 @@ fn main() {
 fn main() {
     let x = true;
     let tuple = match x {
-        true => { let $0var_name = 2 + 2; (var_name, true) }
+        true => {
+            let $0var_name = 2 + 2;
+            (var_name, true)
+        }
         _ => (0, false)
     };
 }
@@ -438,7 +619,10 @@ fn main() {
 "#,
             r#"
 fn main() {
-    let lambda = |x: u32| { let $0var_name = x * 2; var_name };
+    let lambda = |x: u32| {
+        let $0var_name = x * 2;
+        var_name
+    };
 }
 "#,
         );
@@ -1042,6 +1226,45 @@ fn foo(s: &S) {
     }
 
     #[test]
+    fn test_extract_var_index_deref() {
+        check_assist(
+            extract_variable,
+            r#"
+//- minicore: index
+struct X;
+
+impl std::ops::Index<usize> for X {
+    type Output = i32;
+    fn index(&self) -> &Self::Output { 0 }
+}
+
+struct S {
+    sub: X
+}
+
+fn foo(s: &S) {
+    $0s.sub$0[0];
+}"#,
+            r#"
+struct X;
+
+impl std::ops::Index<usize> for X {
+    type Output = i32;
+    fn index(&self) -> &Self::Output { 0 }
+}
+
+struct S {
+    sub: X
+}
+
+fn foo(s: &S) {
+    let $0sub = &s.sub;
+    sub[0];
+}"#,
+        );
+    }
+
+    #[test]
     fn test_extract_var_reference_parameter_deep_nesting() {
         check_assist(
             extract_variable,
@@ -1280,6 +1503,62 @@ fn foo() {
     let mut $0var_name = 0;
     let v = &mut var_name;
 }"#,
+        );
+    }
+
+    #[test]
+    fn generates_no_ref_on_calls() {
+        check_assist(
+            extract_variable,
+            r#"
+struct S;
+impl S {
+    fn do_work(&mut self) {}
+}
+fn bar() -> S { S }
+fn foo() {
+    $0bar()$0.do_work();
+}"#,
+            r#"
+struct S;
+impl S {
+    fn do_work(&mut self) {}
+}
+fn bar() -> S { S }
+fn foo() {
+    let mut $0bar = bar();
+    bar.do_work();
+}"#,
+        );
+    }
+
+    #[test]
+    fn generates_no_ref_for_deref() {
+        check_assist(
+            extract_variable,
+            r#"
+struct S;
+impl S {
+    fn do_work(&mut self) {}
+}
+fn bar() -> S { S }
+fn foo() {
+    let v = &mut &mut bar();
+    $0(**v)$0.do_work();
+}
+"#,
+            r#"
+struct S;
+impl S {
+    fn do_work(&mut self) {}
+}
+fn bar() -> S { S }
+fn foo() {
+    let v = &mut &mut bar();
+    let $0s = *v;
+    s.do_work();
+}
+"#,
         );
     }
 }

@@ -1,28 +1,24 @@
-// compile-flags: -C no-prepopulate-passes
+//@ compile-flags: -C no-prepopulate-passes
 //
 
 #![crate_type = "lib"]
 
-#![feature(repr_simd, platform_intrinsics)]
+#![feature(repr_simd, intrinsics)]
 #![allow(non_camel_case_types)]
 
 #[repr(simd)]
 #[derive(Copy, Clone)]
-pub struct u32x2(u32, u32);
+pub struct u32x2([u32; 2]);
 
 #[repr(simd)]
 #[derive(Copy, Clone)]
-pub struct i32x2(i32, i32);
+pub struct i32x2([i32; 2]);
 
 #[repr(simd)]
 #[derive(Copy, Clone)]
-pub struct i8x16(
-    i8, i8, i8, i8, i8, i8, i8, i8,
-    i8, i8, i8, i8, i8, i8, i8, i8,
-);
+pub struct i8x16([i8; 16]);
 
-
-extern "platform-intrinsic" {
+extern "rust-intrinsic" {
     fn simd_bitmask<T, U>(x: T) -> U;
 }
 

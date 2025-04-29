@@ -6,7 +6,7 @@
 //! present, and if so we branch off into this module, which implements the attribute by
 //! implementing a custom lowering from THIR to MIR.
 //!
-//! The result of this lowering is returned "normally" from the `mir_built` query, with the only
+//! The result of this lowering is returned "normally" from the `build_mir` hook, with the only
 //! notable difference being that the `injected` field in the body is set. Various components of the
 //! MIR pipeline, like borrowck and the pass manager will then consult this field (via
 //! `body.should_skip()`) to skip the parts of the MIR pipeline that precede the MIR phase the user
@@ -19,14 +19,13 @@
 
 use rustc_ast::Attribute;
 use rustc_data_structures::fx::FxHashMap;
-use rustc_hir::def_id::DefId;
 use rustc_hir::HirId;
+use rustc_hir::def_id::DefId;
 use rustc_index::{IndexSlice, IndexVec};
-use rustc_middle::{
-    mir::*,
-    thir::*,
-    ty::{ParamEnv, Ty, TyCtxt},
-};
+use rustc_middle::mir::*;
+use rustc_middle::span_bug;
+use rustc_middle::thir::*;
+use rustc_middle::ty::{ParamEnv, Ty, TyCtxt};
 use rustc_span::Span;
 
 mod parse;
@@ -48,18 +47,21 @@ pub(super) fn build_custom_mir<'tcx>(
         source: MirSource::item(did),
         phase: MirPhase::Built,
         source_scopes: IndexVec::new(),
-        generator: None,
+        coroutine: None,
         local_decls: IndexVec::new(),
         user_type_annotations: IndexVec::new(),
         arg_count: params.len(),
         spread_arg: None,
         var_debug_info: Vec::new(),
         span,
-        required_consts: Vec::new(),
+        required_consts: None,
+        mentioned_items: None,
         is_polymorphic: false,
         tainted_by_errors: None,
         injection_phase: None,
         pass_count: 0,
+        coverage_info_hi: None,
+        function_coverage_info: None,
     };
 
     body.local_decls.push(LocalDecl::new(return_ty, return_ty_span));
@@ -69,10 +71,7 @@ pub(super) fn build_custom_mir<'tcx>(
         parent_scope: None,
         inlined: None,
         inlined_parent_scope: None,
-        local_data: ClearCrossCrate::Set(SourceScopeLocalData {
-            lint_root: hir_id,
-            safety: Safety::Safe,
-        }),
+        local_data: ClearCrossCrate::Set(SourceScopeLocalData { lint_root: hir_id }),
     });
     body.injection_phase = Some(parse_attribute(attr));
 
@@ -87,11 +86,11 @@ pub(super) fn build_custom_mir<'tcx>(
     };
 
     let res: PResult<_> = try {
-        pctxt.parse_args(&params)?;
+        pctxt.parse_args(params)?;
         pctxt.parse_body(expr)?;
     };
     if let Err(err) = res {
-        tcx.sess.diagnostic().span_fatal(
+        tcx.dcx().span_fatal(
             err.span,
             format!("Could not parse {}, found: {:?}", err.expected, err.item_description),
         )
@@ -135,13 +134,12 @@ fn parse_attribute(attr: &Attribute) -> MirPhase {
     MirPhase::parse(dialect, phase)
 }
 
-struct ParseCtxt<'tcx, 'body> {
+struct ParseCtxt<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     param_env: ParamEnv<'tcx>,
-    thir: &'body Thir<'tcx>,
+    thir: &'a Thir<'tcx>,
     source_scope: SourceScope,
-
-    body: &'body mut Body<'tcx>,
+    body: &'a mut Body<'tcx>,
     local_map: FxHashMap<LocalVarId, Local>,
     block_map: FxHashMap<LocalVarId, BasicBlock>,
 }
@@ -152,12 +150,25 @@ struct ParseError {
     expected: String,
 }
 
-impl<'tcx, 'body> ParseCtxt<'tcx, 'body> {
+impl<'a, 'tcx> ParseCtxt<'a, 'tcx> {
     fn expr_error(&self, expr: ExprId, expected: &'static str) -> ParseError {
         let expr = &self.thir[expr];
         ParseError {
             span: expr.span,
             item_description: format!("{:?}", expr.kind),
+            expected: expected.to_string(),
+        }
+    }
+
+    fn stmt_error(&self, stmt: StmtId, expected: &'static str) -> ParseError {
+        let stmt = &self.thir[stmt];
+        let span = match stmt.kind {
+            StmtKind::Expr { expr, .. } => self.thir[expr].span,
+            StmtKind::Let { span, .. } => span,
+        };
+        ParseError {
+            span,
+            item_description: format!("{:?}", stmt.kind),
             expected: expected.to_string(),
         }
     }

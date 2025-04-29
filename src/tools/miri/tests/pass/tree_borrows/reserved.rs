@@ -1,9 +1,9 @@
-//@compile-flags: -Zmiri-tree-borrows -Zmiri-tag-gc=0
+// We disable the GC for this test because it would change what is printed.
+//@compile-flags: -Zmiri-tree-borrows -Zmiri-provenance-gc=0
 
 #[path = "../../utils/mod.rs"]
+#[macro_use]
 mod utils;
-use utils::macros::*;
-use utils::miri_extern::miri_write_to_stderr;
 
 use std::cell::UnsafeCell;
 
@@ -27,9 +27,8 @@ fn main() {
     }
 }
 
-unsafe fn print(msg: &str) {
-    miri_write_to_stderr(msg.as_bytes());
-    miri_write_to_stderr("\n".as_bytes());
+fn print(msg: &str) {
+    eprintln!("{msg}");
 }
 
 unsafe fn read_second<T>(x: &mut T, y: *mut u8) {

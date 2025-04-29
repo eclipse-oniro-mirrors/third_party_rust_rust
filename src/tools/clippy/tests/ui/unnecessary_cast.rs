@@ -1,8 +1,8 @@
-//@run-rustfix
 //@aux-build:extern_fake_libc.rs
 #![warn(clippy::unnecessary_cast)]
 #![allow(
     clippy::borrow_as_ptr,
+    clippy::multiple_bound_locations,
     clippy::no_effect,
     clippy::nonstandard_macro_braces,
     clippy::unnecessary_operation,
@@ -36,6 +36,16 @@ mod fake_libc {
         t;
         unsafe { getpid() }
     }
+}
+
+fn aaa() -> ::std::primitive::u32 {
+    0
+}
+
+use std::primitive::u32 as UnsignedThirtyTwoBitInteger;
+
+fn bbb() -> UnsignedThirtyTwoBitInteger {
+    0
 }
 
 #[rustfmt::skip]
@@ -105,6 +115,13 @@ fn main() {
     extern_fake_libc::getpid_SAFE_TRUTH() as i32;
     let pid = unsafe { fake_libc::getpid() };
     pid as i32;
+    aaa() as u32;
+    let x = aaa();
+    aaa() as u32;
+    // Will not lint currently.
+    bbb() as u32;
+    let x = bbb();
+    bbb() as u32;
 
     let i8_ptr: *const i8 = &1;
     let u8_ptr: *const u8 = &1;
@@ -189,7 +206,7 @@ mod fixable {
 
     fn issue_9563() {
         let _: f64 = (-8.0 as f64).exp();
-        #[allow(clippy::precedence)]
+        #[allow(ambiguous_negative_literals)]
         let _: f64 = -(8.0 as f64).exp(); // should suggest `-8.0_f64.exp()` here not to change code behavior
     }
 
@@ -203,5 +220,11 @@ mod fixable {
 
     fn issue_9603() {
         let _: f32 = -0x400 as f32;
+    }
+
+    // Issue #11968: The suggestion for this lint removes the parentheses and leave the code as
+    // `*x.pow(2)` which tries to dereference the return value rather than `x`.
+    fn issue_11968(x: &usize) -> usize {
+        (*x as usize).pow(2)
     }
 }

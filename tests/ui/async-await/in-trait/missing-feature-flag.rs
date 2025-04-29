@@ -1,8 +1,5 @@
-// edition:2018
-// [next] compile-flags: -Zlower-impl-trait-in-trait-to-assoc-ty
-// revisions: current next
+//@ edition:2018
 
-#![feature(async_fn_in_trait)]
 #![feature(min_specialization)]
 
 struct MyStruct;

@@ -1,10 +1,12 @@
-//@only-target-linux
+//@only-target: linux
 //@compile-flags: -Zmiri-disable-isolation
 
+// FIXME(static_mut_refs): Do not allow `static_mut_refs` lint
+#![allow(static_mut_refs)]
+
 use std::mem::MaybeUninit;
-use std::ptr;
-use std::sync::atomic::AtomicI32;
-use std::sync::atomic::Ordering;
+use std::ptr::{self, addr_of};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,7 +15,7 @@ fn wake_nobody() {
 
     // Wake 1 waiter. Expect zero waiters woken up, as nobody is waiting.
     unsafe {
-        assert_eq!(libc::syscall(libc::SYS_futex, &futex as *const i32, libc::FUTEX_WAKE, 1), 0);
+        assert_eq!(libc::syscall(libc::SYS_futex, addr_of!(futex), libc::FUTEX_WAKE, 1), 0);
     }
 
     // Same, but without omitting the unused arguments.
@@ -21,7 +23,7 @@ fn wake_nobody() {
         assert_eq!(
             libc::syscall(
                 libc::SYS_futex,
-                &futex as *const i32,
+                addr_of!(futex),
                 libc::FUTEX_WAKE,
                 1,
                 ptr::null::<libc::timespec>(),
@@ -52,7 +54,7 @@ fn wait_wrong_val() {
         assert_eq!(
             libc::syscall(
                 libc::SYS_futex,
-                &futex as *const i32,
+                addr_of!(futex),
                 libc::FUTEX_WAIT,
                 456,
                 ptr::null::<libc::timespec>(),
@@ -73,7 +75,7 @@ fn wait_timeout() {
         assert_eq!(
             libc::syscall(
                 libc::SYS_futex,
-                &futex as *const i32,
+                addr_of!(futex),
                 libc::FUTEX_WAIT,
                 123,
                 &libc::timespec { tv_sec: 0, tv_nsec: 200_000_000 },
@@ -110,7 +112,7 @@ fn wait_absolute_timeout() {
         assert_eq!(
             libc::syscall(
                 libc::SYS_futex,
-                &futex as *const i32,
+                addr_of!(futex),
                 libc::FUTEX_WAIT_BITSET,
                 123,
                 &timeout,
@@ -136,7 +138,7 @@ fn wait_wake() {
             assert_eq!(
                 libc::syscall(
                     libc::SYS_futex,
-                    &FUTEX as *const i32,
+                    addr_of!(FUTEX),
                     libc::FUTEX_WAKE,
                     10, // Wake up at most 10 threads.
                 ),
@@ -149,7 +151,7 @@ fn wait_wake() {
         assert_eq!(
             libc::syscall(
                 libc::SYS_futex,
-                &FUTEX as *const i32,
+                addr_of!(FUTEX),
                 libc::FUTEX_WAIT,
                 0,
                 ptr::null::<libc::timespec>(),
@@ -158,7 +160,9 @@ fn wait_wake() {
         );
     }
 
-    assert!((200..1000).contains(&start.elapsed().as_millis()));
+    // When running this in stress-gc mode, things can take quite long.
+    // So the timeout is 3000 ms.
+    assert!((200..3000).contains(&start.elapsed().as_millis()));
     t.join().unwrap();
 }
 
@@ -173,7 +177,7 @@ fn wait_wake_bitset() {
             assert_eq!(
                 libc::syscall(
                     libc::SYS_futex,
-                    &FUTEX as *const i32,
+                    addr_of!(FUTEX),
                     libc::FUTEX_WAKE_BITSET,
                     10, // Wake up at most 10 threads.
                     ptr::null::<libc::timespec>(),
@@ -188,7 +192,7 @@ fn wait_wake_bitset() {
             assert_eq!(
                 libc::syscall(
                     libc::SYS_futex,
-                    &FUTEX as *const i32,
+                    addr_of!(FUTEX),
                     libc::FUTEX_WAKE_BITSET,
                     10, // Wake up at most 10 threads.
                     ptr::null::<libc::timespec>(),
@@ -204,7 +208,7 @@ fn wait_wake_bitset() {
         assert_eq!(
             libc::syscall(
                 libc::SYS_futex,
-                &FUTEX as *const i32,
+                addr_of!(FUTEX),
                 libc::FUTEX_WAIT_BITSET,
                 0,
                 ptr::null::<libc::timespec>(),
@@ -219,6 +223,7 @@ fn wait_wake_bitset() {
     t.join().unwrap();
 }
 
+// Crucial test which relies on the SeqCst fences in futex wait/wake.
 fn concurrent_wait_wake() {
     const FREE: i32 = 0;
     const HELD: i32 = 1;
@@ -244,7 +249,7 @@ fn concurrent_wait_wake() {
             unsafe {
                 let ret = libc::syscall(
                     libc::SYS_futex,
-                    &FUTEX as *const AtomicI32,
+                    addr_of!(FUTEX),
                     libc::FUTEX_WAIT,
                     HELD,
                     ptr::null::<libc::timespec>(),
@@ -267,7 +272,7 @@ fn concurrent_wait_wake() {
         FUTEX.store(FREE, Ordering::Relaxed);
         unsafe {
             DATA = 1;
-            libc::syscall(libc::SYS_futex, &FUTEX as *const AtomicI32, libc::FUTEX_WAKE, 1);
+            libc::syscall(libc::SYS_futex, addr_of!(FUTEX), libc::FUTEX_WAKE, 1);
         }
 
         t.join().unwrap();

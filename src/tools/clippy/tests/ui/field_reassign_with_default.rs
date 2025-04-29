@@ -1,7 +1,8 @@
-//@aux-build:proc_macro_derive.rs:proc-macro
-//@aux-build:proc_macros.rs:proc-macro
+//@aux-build:proc_macro_derive.rs
+//@aux-build:proc_macros.rs
 
 #![warn(clippy::field_reassign_with_default)]
+#![allow(clippy::assigning_clones)]
 
 #[macro_use]
 extern crate proc_macro_derive;
@@ -191,8 +192,8 @@ struct WrapperMulti<T, U> {
 }
 
 mod issue6312 {
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     // do not lint: type implements `Drop` but not all fields are `Copy`
     #[derive(Clone, Default)]

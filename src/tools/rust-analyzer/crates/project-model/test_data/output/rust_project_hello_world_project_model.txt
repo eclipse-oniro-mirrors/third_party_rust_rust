@@ -14,7 +14,10 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "debug_assertions",
+                "miri",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -27,16 +30,13 @@
                     "core",
                 ),
                 prelude: true,
+                sysroot: false,
             },
         ],
         origin: Lang(
             Alloc,
         ),
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
     1: CrateData {
         root_file_id: FileId(
@@ -53,7 +53,10 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "debug_assertions",
+                "miri",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -64,10 +67,6 @@
             Core,
         ),
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
     2: CrateData {
         root_file_id: FileId(
@@ -84,7 +83,10 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "debug_assertions",
+                "miri",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -95,10 +97,6 @@
             Other,
         ),
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
     3: CrateData {
         root_file_id: FileId(
@@ -115,7 +113,10 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "debug_assertions",
+                "miri",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -126,10 +127,6 @@
             Other,
         ),
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
     4: CrateData {
         root_file_id: FileId(
@@ -146,7 +143,10 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "debug_assertions",
+                "miri",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -159,6 +159,7 @@
                     "std",
                 ),
                 prelude: true,
+                sysroot: false,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(1),
@@ -166,16 +167,13 @@
                     "core",
                 ),
                 prelude: true,
+                sysroot: false,
             },
         ],
         origin: Lang(
-            Other,
+            ProcMacro,
         ),
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
     5: CrateData {
         root_file_id: FileId(
@@ -192,7 +190,10 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "debug_assertions",
+                "miri",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -203,10 +204,6 @@
             Other,
         ),
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
     6: CrateData {
         root_file_id: FileId(
@@ -223,7 +220,10 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "debug_assertions",
+                "miri",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -236,6 +236,7 @@
                     "alloc",
                 ),
                 prelude: true,
+                sysroot: false,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(3),
@@ -243,6 +244,7 @@
                     "panic_unwind",
                 ),
                 prelude: true,
+                sysroot: false,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(2),
@@ -250,6 +252,7 @@
                     "panic_abort",
                 ),
                 prelude: true,
+                sysroot: false,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(1),
@@ -257,6 +260,7 @@
                     "core",
                 ),
                 prelude: true,
+                sysroot: false,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(5),
@@ -264,6 +268,7 @@
                     "profiler_builtins",
                 ),
                 prelude: true,
+                sysroot: false,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(9),
@@ -271,6 +276,7 @@
                     "unwind",
                 ),
                 prelude: true,
+                sysroot: false,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(7),
@@ -278,6 +284,7 @@
                     "std_detect",
                 ),
                 prelude: true,
+                sysroot: false,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(8),
@@ -285,16 +292,13 @@
                     "test",
                 ),
                 prelude: true,
+                sysroot: false,
             },
         ],
         origin: Lang(
             Std,
         ),
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
     7: CrateData {
         root_file_id: FileId(
@@ -311,7 +315,10 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "debug_assertions",
+                "miri",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -322,10 +329,6 @@
             Other,
         ),
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
     8: CrateData {
         root_file_id: FileId(
@@ -342,7 +345,10 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "debug_assertions",
+                "miri",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -353,10 +359,6 @@
             Test,
         ),
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
     9: CrateData {
         root_file_id: FileId(
@@ -373,7 +375,10 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "debug_assertions",
+                "miri",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -384,10 +389,6 @@
             Other,
         ),
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
     10: CrateData {
         root_file_id: FileId(
@@ -404,7 +405,9 @@
             },
         ),
         cfg_options: CfgOptions(
-            [],
+            [
+                "rust_analyzer",
+            ],
         ),
         potential_cfg_options: None,
         env: Env {
@@ -417,13 +420,15 @@
                     "core",
                 ),
                 prelude: true,
+                sysroot: true,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(0),
                 name: CrateName(
                     "alloc",
                 ),
-                prelude: true,
+                prelude: false,
+                sysroot: true,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(6),
@@ -431,6 +436,7 @@
                     "std",
                 ),
                 prelude: true,
+                sysroot: true,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(8),
@@ -438,6 +444,7 @@
                     "test",
                 ),
                 prelude: false,
+                sysroot: true,
             },
             Dependency {
                 crate_id: Idx::<CrateData>(4),
@@ -445,6 +452,7 @@
                     "proc_macro",
                 ),
                 prelude: false,
+                sysroot: true,
             },
         ],
         origin: Local {
@@ -454,9 +462,5 @@
             ),
         },
         is_proc_macro: false,
-        target_layout: Err(
-            "rust-project.json projects have no target layout set",
-        ),
-        channel: None,
     },
 }

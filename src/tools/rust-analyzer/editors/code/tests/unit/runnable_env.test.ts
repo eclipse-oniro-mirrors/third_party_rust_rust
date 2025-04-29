@@ -1,8 +1,8 @@
 import * as assert from "assert";
 import { prepareEnv } from "../../src/run";
-import { RunnableEnvCfg } from "../../src/config";
-import { Context } from ".";
-import * as ra from "../../src/lsp_ext";
+import type { RunnableEnvCfg } from "../../src/config";
+import type { Context } from ".";
+import type * as ra from "../../src/lsp_ext";
 
 function makeRunnable(label: string): ra.Runnable {
     return {
@@ -10,15 +10,16 @@ function makeRunnable(label: string): ra.Runnable {
         kind: "cargo",
         args: {
             cargoArgs: [],
+            cwd: ".",
             executableArgs: [],
-            cargoExtraArgs: [],
         },
     };
 }
 
-function fakePrepareEnv(runnableName: string, config: RunnableEnvCfg): Record<string, string> {
+function fakePrepareEnv(runnableName: string, config?: RunnableEnvCfg): Record<string, string> {
     const runnable = makeRunnable(runnableName);
-    return prepareEnv(runnable, config);
+    const runnableArgs = runnable.args as ra.CargoRunnableArgs;
+    return prepareEnv(false, runnable.label, runnableArgs, config);
 }
 
 export async function getTests(ctx: Context) {

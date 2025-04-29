@@ -1,5 +1,5 @@
-// check-pass
-// compile-flags: -Z print-vtable-sizes
+//@ check-pass
+//@ compile-flags: -Z print-vtable-sizes
 #![crate_type = "lib"]
 
 trait A<T: help::V>: AsRef<[T::V]> + AsMut<[T::V]> {}
@@ -7,11 +7,12 @@ trait A<T: help::V>: AsRef<[T::V]> + AsMut<[T::V]> {}
 trait B<T>: AsRef<T> + AsRef<T> + AsRef<T> + AsRef<T> {}
 
 trait C {
-    fn x() {} // not object safe, shouldn't be reported
+    fn x() {} // not dyn-compatible, shouldn't be reported
 }
 
-// This ideally should not have any upcasting cost,
-// but currently does due to a bug
+// This does not have any upcasting cost,
+// because both `Send` and `Sync` are traits
+// with no methods
 trait D: Send + Sync + help::MarkerWithSuper {}
 
 // This can't have no cost without reordering,

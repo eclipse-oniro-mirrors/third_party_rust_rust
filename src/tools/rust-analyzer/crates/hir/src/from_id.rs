@@ -15,7 +15,7 @@ use crate::{
 };
 
 macro_rules! from_id {
-    ($(($id:path, $ty:path)),*) => {$(
+    ($(($id:path, $ty:path)),* $(,)?) => {$(
         impl From<$id> for $ty {
             fn from(id: $id) -> $ty {
                 $ty { id }
@@ -47,7 +47,8 @@ from_id![
     (hir_def::TypeParamId, crate::TypeParam),
     (hir_def::ConstParamId, crate::ConstParam),
     (hir_def::LifetimeParamId, crate::LifetimeParam),
-    (hir_def::MacroId, crate::Macro)
+    (hir_def::MacroId, crate::Macro),
+    (hir_def::ExternCrateId, crate::ExternCrateDecl),
 ];
 
 impl From<AdtId> for Adt {
@@ -92,13 +93,13 @@ impl From<GenericParam> for GenericParamId {
 
 impl From<EnumVariantId> for Variant {
     fn from(id: EnumVariantId) -> Self {
-        Variant { parent: id.parent.into(), id: id.local_id }
+        Variant { id }
     }
 }
 
 impl From<Variant> for EnumVariantId {
     fn from(def: Variant) -> Self {
-        EnumVariantId { parent: def.parent.id, local_id: def.id }
+        def.id
     }
 }
 
@@ -181,7 +182,6 @@ impl From<GenericDef> for GenericDefId {
             GenericDef::TraitAlias(it) => GenericDefId::TraitAliasId(it.id),
             GenericDef::TypeAlias(it) => GenericDefId::TypeAliasId(it.id),
             GenericDef::Impl(it) => GenericDefId::ImplId(it.id),
-            GenericDef::Variant(it) => GenericDefId::EnumVariantId(it.into()),
             GenericDef::Const(it) => GenericDefId::ConstId(it.id),
         }
     }
@@ -196,7 +196,6 @@ impl From<GenericDefId> for GenericDef {
             GenericDefId::TraitAliasId(it) => GenericDef::TraitAlias(it.into()),
             GenericDefId::TypeAliasId(it) => GenericDef::TypeAlias(it.into()),
             GenericDefId::ImplId(it) => GenericDef::Impl(it.into()),
-            GenericDefId::EnumVariantId(it) => GenericDef::Variant(it.into()),
             GenericDefId::ConstId(it) => GenericDef::Const(it.into()),
         }
     }

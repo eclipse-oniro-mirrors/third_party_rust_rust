@@ -12,11 +12,16 @@ fn old_test_headers() {
 
     for entry in WalkDir::new("tests") {
         let entry = entry.unwrap();
-        if !entry.file_type().is_file() {
+        let is_hidden_file = entry
+            .file_name()
+            .to_str()
+            .expect("non-UTF-8 file name")
+            .starts_with('.');
+        if is_hidden_file || !entry.file_type().is_file() {
             continue;
         }
 
-        let file = fs::read_to_string(entry.path()).unwrap();
+        let file = fs::read_to_string(entry.path()).unwrap_or_else(|err| panic!("{}: {err}", entry.path().display()));
 
         if let Some(header) = old_headers.find(&file) {
             println!("Found header `{}` in {}", header.as_str(), entry.path().display());

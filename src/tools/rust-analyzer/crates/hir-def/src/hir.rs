@@ -12,14 +12,15 @@
 //!
 //! See also a neighboring `body` module.
 
+pub mod format_args;
 pub mod type_ref;
 
 use std::fmt;
 
 use hir_expand::name::Name;
-use intern::Interned;
+use intern::{Interned, Symbol};
 use la_arena::{Idx, RawIdx};
-use smallvec::SmallVec;
+use rustc_apfloat::ieee::{Half as f16, Quad as f128};
 use syntax::ast;
 
 use crate::{
@@ -55,42 +56,51 @@ pub struct Label {
 }
 pub type LabelId = Idx<Label>;
 
-// We convert float values into bits and that's how we don't need to deal with f32 and f64.
-// For PartialEq, bits comparison should work, as ordering is not important
+// We leave float values as a string to avoid double rounding.
+// For PartialEq, string comparison should work, as ordering is not important
 // https://github.com/rust-lang/rust-analyzer/issues/12380#issuecomment-1137284360
-#[derive(Default, Debug, Clone, Copy, Eq, PartialEq)]
-pub struct FloatTypeWrapper(u64);
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct FloatTypeWrapper(Symbol);
 
+// FIXME(#17451): Use builtin types once stabilised.
 impl FloatTypeWrapper {
-    pub fn new(value: f64) -> Self {
-        Self(value.to_bits())
+    pub fn new(sym: Symbol) -> Self {
+        Self(sym)
     }
 
-    pub fn into_f64(self) -> f64 {
-        f64::from_bits(self.0)
+    pub fn to_f128(&self) -> f128 {
+        self.0.as_str().parse().unwrap_or_default()
     }
 
-    pub fn into_f32(self) -> f32 {
-        f64::from_bits(self.0) as f32
+    pub fn to_f64(&self) -> f64 {
+        self.0.as_str().parse().unwrap_or_default()
+    }
+
+    pub fn to_f32(&self) -> f32 {
+        self.0.as_str().parse().unwrap_or_default()
+    }
+
+    pub fn to_f16(&self) -> f16 {
+        self.0.as_str().parse().unwrap_or_default()
     }
 }
 
 impl fmt::Display for FloatTypeWrapper {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", f64::from_bits(self.0))
+        f.write_str(self.0.as_str())
     }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Literal {
-    String(Box<str>),
+    String(Symbol),
     ByteString(Box<[u8]>),
-    CString(Box<str>),
+    CString(Box<[u8]>),
     Char(char),
     Bool(bool),
     Int(i128, Option<BuiltinInt>),
     Uint(u128, Option<BuiltinUint>),
-    // Here we are using a wrapper around float because f32 and f64 do not implement Eq, so they
+    // Here we are using a wrapper around float because float primitives do not implement Eq, so they
     // could not be used directly here, to understand how the wrapper works go to definition of
     // FloatTypeWrapper
     Float(FloatTypeWrapper, Option<BuiltinFloat>),
@@ -100,7 +110,7 @@ pub enum Literal {
 /// Used in range patterns.
 pub enum LiteralOrConst {
     Literal(Literal),
-    Const(Path),
+    Const(PatId),
 }
 
 impl Literal {
@@ -117,11 +127,10 @@ impl From<ast::LiteralKind> for Literal {
     fn from(ast_lit_kind: ast::LiteralKind) -> Self {
         use ast::LiteralKind;
         match ast_lit_kind {
-            // FIXME: these should have actual values filled in, but unsure on perf impact
             LiteralKind::IntNumber(lit) => {
                 if let builtin @ Some(_) = lit.suffix().and_then(BuiltinFloat::from_suffix) {
                     Literal::Float(
-                        FloatTypeWrapper::new(lit.float_value().unwrap_or(Default::default())),
+                        FloatTypeWrapper::new(Symbol::intern(&lit.value_string())),
                         builtin,
                     )
                 } else if let builtin @ Some(_) = lit.suffix().and_then(BuiltinUint::from_suffix) {
@@ -133,18 +142,18 @@ impl From<ast::LiteralKind> for Literal {
             }
             LiteralKind::FloatNumber(lit) => {
                 let ty = lit.suffix().and_then(BuiltinFloat::from_suffix);
-                Literal::Float(FloatTypeWrapper::new(lit.value().unwrap_or(Default::default())), ty)
+                Literal::Float(FloatTypeWrapper::new(Symbol::intern(&lit.value_string())), ty)
             }
             LiteralKind::ByteString(bs) => {
-                let text = bs.value().map(Box::from).unwrap_or_else(Default::default);
+                let text = bs.value().map_or_else(|_| Default::default(), Box::from);
                 Literal::ByteString(text)
             }
             LiteralKind::String(s) => {
-                let text = s.value().map(Box::from).unwrap_or_else(Default::default);
+                let text = s.value().map_or_else(|_| Symbol::empty(), |it| Symbol::intern(&it));
                 Literal::String(text)
             }
             LiteralKind::CString(s) => {
-                let text = s.value().map(Box::from).unwrap_or_else(Default::default);
+                let text = s.value().map_or_else(|_| Default::default(), Box::from);
                 Literal::CString(text)
             }
             LiteralKind::Byte(b) => {
@@ -182,17 +191,13 @@ pub enum Expr {
         tail: Option<ExprId>,
     },
     Const(ConstBlockId),
+    // FIXME: Fold this into Block with an unsafe flag?
     Unsafe {
         id: Option<BlockId>,
         statements: Box<[Statement]>,
         tail: Option<ExprId>,
     },
     Loop {
-        body: ExprId,
-        label: Option<LabelId>,
-    },
-    While {
-        condition: ExprId,
         body: ExprId,
         label: Option<LabelId>,
     },
@@ -220,6 +225,9 @@ pub enum Expr {
     },
     Return {
         expr: Option<ExprId>,
+    },
+    Become {
+        expr: ExprId,
     },
     Yield {
         expr: Option<ExprId>,
@@ -270,6 +278,7 @@ pub enum Expr {
     Index {
         base: ExprId,
         index: ExprId,
+        is_assignee_expr: bool,
     },
     Closure {
         args: Box<[PatId]>,
@@ -286,12 +295,138 @@ pub enum Expr {
     Array(Array),
     Literal(Literal),
     Underscore,
+    OffsetOf(OffsetOf),
+    InlineAsm(InlineAsm),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OffsetOf {
+    pub container: Interned<TypeRef>,
+    pub fields: Box<[Name]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineAsm {
+    pub operands: Box<[(Option<Name>, AsmOperand)]>,
+    pub options: AsmOptions,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AsmOptions(u16);
+bitflags::bitflags! {
+    impl AsmOptions: u16 {
+        const PURE            = 1 << 0;
+        const NOMEM           = 1 << 1;
+        const READONLY        = 1 << 2;
+        const PRESERVES_FLAGS = 1 << 3;
+        const NORETURN        = 1 << 4;
+        const NOSTACK         = 1 << 5;
+        const ATT_SYNTAX      = 1 << 6;
+        const RAW             = 1 << 7;
+        const MAY_UNWIND      = 1 << 8;
+    }
+}
+
+impl AsmOptions {
+    pub const COUNT: usize = Self::all().bits().count_ones() as usize;
+
+    pub const GLOBAL_OPTIONS: Self = Self::ATT_SYNTAX.union(Self::RAW);
+    pub const NAKED_OPTIONS: Self = Self::ATT_SYNTAX.union(Self::RAW).union(Self::NORETURN);
+
+    pub fn human_readable_names(&self) -> Vec<&'static str> {
+        let mut options = vec![];
+
+        if self.contains(AsmOptions::PURE) {
+            options.push("pure");
+        }
+        if self.contains(AsmOptions::NOMEM) {
+            options.push("nomem");
+        }
+        if self.contains(AsmOptions::READONLY) {
+            options.push("readonly");
+        }
+        if self.contains(AsmOptions::PRESERVES_FLAGS) {
+            options.push("preserves_flags");
+        }
+        if self.contains(AsmOptions::NORETURN) {
+            options.push("noreturn");
+        }
+        if self.contains(AsmOptions::NOSTACK) {
+            options.push("nostack");
+        }
+        if self.contains(AsmOptions::ATT_SYNTAX) {
+            options.push("att_syntax");
+        }
+        if self.contains(AsmOptions::RAW) {
+            options.push("raw");
+        }
+        if self.contains(AsmOptions::MAY_UNWIND) {
+            options.push("may_unwind");
+        }
+
+        options
+    }
+}
+
+impl std::fmt::Debug for AsmOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        bitflags::parser::to_writer(self, f)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum AsmOperand {
+    In {
+        reg: InlineAsmRegOrRegClass,
+        expr: ExprId,
+    },
+    Out {
+        reg: InlineAsmRegOrRegClass,
+        expr: Option<ExprId>,
+        late: bool,
+    },
+    InOut {
+        reg: InlineAsmRegOrRegClass,
+        expr: ExprId,
+        late: bool,
+    },
+    SplitInOut {
+        reg: InlineAsmRegOrRegClass,
+        in_expr: ExprId,
+        out_expr: Option<ExprId>,
+        late: bool,
+    },
+    Label(ExprId),
+    Const(ExprId),
+    Sym(Path),
+}
+
+impl AsmOperand {
+    pub fn reg(&self) -> Option<&InlineAsmRegOrRegClass> {
+        match self {
+            Self::In { reg, .. }
+            | Self::Out { reg, .. }
+            | Self::InOut { reg, .. }
+            | Self::SplitInOut { reg, .. } => Some(reg),
+            Self::Const { .. } | Self::Sym { .. } | Self::Label { .. } => None,
+        }
+    }
+
+    pub fn is_clobber(&self) -> bool {
+        matches!(self, AsmOperand::Out { reg: InlineAsmRegOrRegClass::Reg(_), late: _, expr: None })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum InlineAsmRegOrRegClass {
+    Reg(Symbol),
+    RegClass(Symbol),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClosureKind {
     Closure,
-    Generator(Movability),
+    Coroutine(Movability),
     Async,
 }
 
@@ -340,13 +475,31 @@ pub enum Statement {
         expr: ExprId,
         has_semi: bool,
     },
+    // At the moment, we only use this to figure out if a return expression
+    // is really the last statement of a block. See #16566
+    Item,
 }
 
 impl Expr {
     pub fn walk_child_exprs(&self, mut f: impl FnMut(ExprId)) {
         match self {
             Expr::Missing => {}
-            Expr::Path(_) => {}
+            Expr::Path(_) | Expr::OffsetOf(_) => {}
+            Expr::InlineAsm(it) => it.operands.iter().for_each(|(_, op)| match op {
+                AsmOperand::In { expr, .. }
+                | AsmOperand::Out { expr: Some(expr), .. }
+                | AsmOperand::InOut { expr, .. } => f(*expr),
+                AsmOperand::SplitInOut { in_expr, out_expr, .. } => {
+                    f(*in_expr);
+                    if let Some(out_expr) = out_expr {
+                        f(*out_expr);
+                    }
+                }
+                AsmOperand::Out { expr: None, .. }
+                | AsmOperand::Const(_)
+                | AsmOperand::Label(_)
+                | AsmOperand::Sym(_) => (),
+            }),
             Expr::If { condition, then_branch, else_branch } => {
                 f(*condition);
                 f(*then_branch);
@@ -372,6 +525,7 @@ impl Expr {
                             }
                         }
                         Statement::Expr { expr: expression, .. } => f(*expression),
+                        Statement::Item => (),
                     }
                 }
                 if let &Some(expr) = tail {
@@ -379,10 +533,6 @@ impl Expr {
                 }
             }
             Expr::Loop { body, .. } => f(*body),
-            Expr::While { condition, body, .. } => {
-                f(*condition);
-                f(*body);
-            }
             Expr::Call { callee, args, .. } => {
                 f(*callee);
                 args.iter().copied().for_each(f);
@@ -404,6 +554,7 @@ impl Expr {
                     f(expr);
                 }
             }
+            Expr::Become { expr } => f(*expr),
             Expr::RecordLit { fields, spread, .. } => {
                 for field in fields.iter() {
                     f(field.expr);
@@ -427,7 +578,7 @@ impl Expr {
                     f(rhs);
                 }
             }
-            Expr::Index { base, index } => {
+            Expr::Index { base, index, .. } => {
                 f(*base);
                 f(*index);
             }
@@ -488,11 +639,11 @@ impl BindingAnnotation {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum BindingProblems {
-    /// https://doc.rust-lang.org/stable/error_codes/E0416.html
+    /// <https://doc.rust-lang.org/stable/error_codes/E0416.html>
     BoundMoreThanOnce,
-    /// https://doc.rust-lang.org/stable/error_codes/E0409.html
+    /// <https://doc.rust-lang.org/stable/error_codes/E0409.html>
     BoundInconsistently,
-    /// https://doc.rust-lang.org/stable/error_codes/E0408.html
+    /// <https://doc.rust-lang.org/stable/error_codes/E0408.html>
     NotBoundAcrossAll,
 }
 
@@ -500,7 +651,6 @@ pub enum BindingProblems {
 pub struct Binding {
     pub name: Name,
     pub mode: BindingAnnotation,
-    pub definitions: SmallVec<[PatId; 1]>,
     pub problems: Option<BindingProblems>,
 }
 
@@ -515,7 +665,7 @@ pub struct RecordFieldPat {
 pub enum Pat {
     Missing,
     Wild,
-    Tuple { args: Box<[PatId]>, ellipsis: Option<usize> },
+    Tuple { args: Box<[PatId]>, ellipsis: Option<u32> },
     Or(Box<[PatId]>),
     Record { path: Option<Box<Path>>, args: Box<[RecordFieldPat]>, ellipsis: bool },
     Range { start: Option<Box<LiteralOrConst>>, end: Option<Box<LiteralOrConst>> },
@@ -523,7 +673,7 @@ pub enum Pat {
     Path(Box<Path>),
     Lit(ExprId),
     Bind { id: BindingId, subpat: Option<PatId> },
-    TupleStruct { path: Option<Box<Path>>, args: Box<[PatId]>, ellipsis: Option<usize> },
+    TupleStruct { path: Option<Box<Path>>, args: Box<[PatId]>, ellipsis: Option<u32> },
     Ref { pat: PatId, mutability: Mutability },
     Box { inner: PatId },
     ConstBlock(ExprId),

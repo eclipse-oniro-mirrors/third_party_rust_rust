@@ -1,7 +1,8 @@
-// revisions: s390x
-// assembly-output: emit-asm
-//[s390x] compile-flags: --target s390x-unknown-linux-gnu
-//[s390x] needs-llvm-components: systemz
+//@ revisions: s390x
+//@ assembly-output: emit-asm
+//@[s390x] compile-flags: --target s390x-unknown-linux-gnu
+//@[s390x] needs-llvm-components: systemz
+//@ compile-flags: -Zmerge-functions=disabled
 
 #![feature(no_core, lang_items, rustc_attrs, repr_simd, asm_experimental_arch)]
 #![crate_type = "rlib"]
@@ -42,16 +43,9 @@ extern "C" {
     static extern_static: u8;
 }
 
-// Hack to avoid function merging
-extern "Rust" {
-    fn dont_merge(s: &str);
-}
-
 macro_rules! check { ($func:ident, $ty:ty, $class:ident, $mov:literal) => {
     #[no_mangle]
     pub unsafe fn $func(x: $ty) -> $ty {
-        dont_merge(stringify!($func));
-
         let y;
         asm!(concat!($mov," {}, {}"), out($class) y, in($class) x);
         y
@@ -61,8 +55,6 @@ macro_rules! check { ($func:ident, $ty:ty, $class:ident, $mov:literal) => {
 macro_rules! check_reg { ($func:ident, $ty:ty, $reg:tt, $mov:literal) => {
     #[no_mangle]
     pub unsafe fn $func(x: $ty) -> $ty {
-        dont_merge(stringify!($func));
-
         let y;
         asm!(concat!($mov, " %", $reg, ", %", $reg), lateout($reg) y, in($reg) x);
         y
@@ -111,6 +103,30 @@ check!(reg_i32, i32, reg, "lgr");
 // CHECK: lgr %r{{[0-9]+}}, %r{{[0-9]+}}
 // CHECK: #NO_APP
 check!(reg_i64, i64, reg, "lgr");
+
+// CHECK-LABEL: reg_i8_addr:
+// CHECK: #APP
+// CHECK: lgr %r{{[0-9]+}}, %r{{[0-9]+}}
+// CHECK: #NO_APP
+check!(reg_i8_addr, i8, reg_addr, "lgr");
+
+// CHECK-LABEL: reg_i16_addr:
+// CHECK: #APP
+// CHECK: lgr %r{{[0-9]+}}, %r{{[0-9]+}}
+// CHECK: #NO_APP
+check!(reg_i16_addr, i16, reg_addr, "lgr");
+
+// CHECK-LABEL: reg_i32_addr:
+// CHECK: #APP
+// CHECK: lgr %r{{[0-9]+}}, %r{{[0-9]+}}
+// CHECK: #NO_APP
+check!(reg_i32_addr, i32, reg_addr, "lgr");
+
+// CHECK-LABEL: reg_i64_addr:
+// CHECK: #APP
+// CHECK: lgr %r{{[0-9]+}}, %r{{[0-9]+}}
+// CHECK: #NO_APP
+check!(reg_i64_addr, i64, reg_addr, "lgr");
 
 // CHECK-LABEL: reg_f32:
 // CHECK: #APP

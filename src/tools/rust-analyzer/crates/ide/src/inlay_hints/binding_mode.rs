@@ -2,17 +2,19 @@
 //! ```no_run
 //! let /* & */ (/* ref */ x,) = &(0,);
 //! ```
-use hir::{Mutability, Semantics};
-use ide_db::RootDatabase;
+use hir::Mutability;
+use ide_db::famous_defs::FamousDefs;
 
+use span::EditionedFileId;
 use syntax::ast::{self, AstNode};
 
 use crate::{InlayHint, InlayHintPosition, InlayHintsConfig, InlayKind};
 
 pub(super) fn hints(
     acc: &mut Vec<InlayHint>,
-    sema: &Semantics<'_, RootDatabase>,
+    FamousDefs(sema, _): &FamousDefs<'_, '_>,
     config: &InlayHintsConfig,
+    _file_id: EditionedFileId,
     pat: &ast::Pat,
 ) -> Option<()> {
     if !config.binding_mode_hints {
@@ -52,11 +54,12 @@ pub(super) fn hints(
         acc.push(InlayHint {
             range,
             kind: InlayKind::BindingMode,
-            label: r.to_string().into(),
+            label: r.into(),
             text_edit: None,
             position: InlayHintPosition::Before,
             pad_left: false,
             pad_right: mut_reference,
+            resolve_parent: Some(pat.syntax().text_range()),
         });
     });
     match pat {
@@ -70,11 +73,12 @@ pub(super) fn hints(
             acc.push(InlayHint {
                 range: pat.syntax().text_range(),
                 kind: InlayKind::BindingMode,
-                label: bm.to_string().into(),
+                label: bm.into(),
                 text_edit: None,
                 position: InlayHintPosition::Before,
                 pad_left: false,
                 pad_right: true,
+                resolve_parent: Some(pat.syntax().text_range()),
             });
         }
         ast::Pat::OrPat(pat) if !pattern_adjustments.is_empty() && outer_paren_pat.is_none() => {

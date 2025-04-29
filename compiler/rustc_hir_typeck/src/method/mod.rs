@@ -3,61 +3,61 @@
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/method-lookup.html
 
 mod confirm;
-mod prelude2021;
-pub mod probe;
+mod prelude_edition_lints;
+pub(crate) mod probe;
 mod suggest;
 
-pub use self::suggest::SelfSource;
-pub use self::MethodError::*;
-
-use crate::errors::OpMethodGenericParams;
-use crate::FnCtxt;
-use rustc_data_structures::sync::Lrc;
-use rustc_errors::{Applicability, Diagnostic, SubdiagnosticMessage};
+use rustc_errors::{Applicability, Diag, SubdiagMessage};
 use rustc_hir as hir;
 use rustc_hir::def::{CtorOf, DefKind, Namespace};
 use rustc_hir::def_id::DefId;
 use rustc_infer::infer::{self, InferOk};
+use rustc_infer::traits::PredicateObligations;
 use rustc_middle::query::Providers;
 use rustc_middle::traits::ObligationCause;
-use rustc_middle::ty::subst::{InternalSubsts, SubstsRef};
-use rustc_middle::ty::{self, GenericParamDefKind, Ty, TypeVisitableExt};
+use rustc_middle::ty::{
+    self, GenericArgs, GenericArgsRef, GenericParamDefKind, Ty, TypeVisitableExt,
+};
+use rustc_middle::{bug, span_bug};
 use rustc_span::symbol::Ident;
-use rustc_span::Span;
+use rustc_span::{ErrorGuaranteed, Span};
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use rustc_trait_selection::traits::{self, NormalizeExt};
+use tracing::{debug, instrument};
 
+pub(crate) use self::MethodError::*;
 use self::probe::{IsSuggestion, ProbeScope};
+use crate::FnCtxt;
 
-pub fn provide(providers: &mut Providers) {
+pub(crate) fn provide(providers: &mut Providers) {
     probe::provide(providers);
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct MethodCallee<'tcx> {
+pub(crate) struct MethodCallee<'tcx> {
     /// Impl method ID, for inherent methods, or trait method ID, otherwise.
     pub def_id: DefId,
-    pub substs: SubstsRef<'tcx>,
+    pub args: GenericArgsRef<'tcx>,
 
     /// Instantiated method signature, i.e., it has been
-    /// substituted, normalized, and has had late-bound
+    /// instantiated, normalized, and has had late-bound
     /// lifetimes replaced with inference variables.
     pub sig: ty::FnSig<'tcx>,
 }
 
 #[derive(Debug)]
-pub enum MethodError<'tcx> {
-    // Did not find an applicable method, but we did find various near-misses that may work.
+pub(crate) enum MethodError<'tcx> {
+    /// Did not find an applicable method, but we did find various near-misses that may work.
     NoMatch(NoMatchData<'tcx>),
 
-    // Multiple methods might apply.
+    /// Multiple methods might apply.
     Ambiguity(Vec<CandidateSource>),
 
-    // Found an applicable method, but it is not visible. The third argument contains a list of
-    // not-in-scope traits which may work.
+    /// Found an applicable method, but it is not visible. The third argument contains a list of
+    /// not-in-scope traits which may work.
     PrivateMatch(DefKind, DefId, Vec<DefId>),
 
-    // Found a `Self: Sized` bound where `Self` is a trait object.
+    /// Found a `Self: Sized` bound where `Self` is a trait object.
     IllegalSizedBound {
         candidates: Vec<DefId>,
         needs_mut: bool,
@@ -65,14 +65,17 @@ pub enum MethodError<'tcx> {
         self_expr: &'tcx hir::Expr<'tcx>,
     },
 
-    // Found a match, but the return type is wrong
+    /// Found a match, but the return type is wrong
     BadReturnType,
+
+    /// Error has already been emitted, no need to emit another one.
+    ErrorReported(ErrorGuaranteed),
 }
 
 // Contains a list of static methods that may apply, a list of unsatisfied trait predicates which
 // could lead to matches if satisfied, and a list of not-in-scope traits which may work.
 #[derive(Debug)]
-pub struct NoMatchData<'tcx> {
+pub(crate) struct NoMatchData<'tcx> {
     pub static_candidates: Vec<CandidateSource>,
     pub unsatisfied_predicates:
         Vec<(ty::Predicate<'tcx>, Option<ty::Predicate<'tcx>>, Option<ObligationCause<'tcx>>)>,
@@ -83,28 +86,27 @@ pub struct NoMatchData<'tcx> {
 
 // A pared down enum describing just the places from which a method
 // candidate can arise. Used for error reporting only.
-#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum CandidateSource {
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CandidateSource {
     Impl(DefId),
     Trait(DefId /* trait id */),
 }
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
-    /// Determines whether the type `self_ty` supports a method name `method_name` or not.
+    /// Determines whether the type `self_ty` supports a visible method named `method_name` or not.
     #[instrument(level = "debug", skip(self))]
-    pub fn method_exists(
+    pub(crate) fn method_exists_for_diagnostic(
         &self,
         method_name: Ident,
         self_ty: Ty<'tcx>,
         call_expr_id: hir::HirId,
-        allow_private: bool,
         return_type: Option<Ty<'tcx>>,
     ) -> bool {
         match self.probe_for_name(
             probe::Mode::MethodCall,
             method_name,
             return_type,
-            IsSuggestion(false),
+            IsSuggestion(true),
             self_ty,
             call_expr_id,
             ProbeScope::TraitsInScope,
@@ -119,9 +121,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
             Err(NoMatch(..)) => false,
             Err(Ambiguity(..)) => true,
-            Err(PrivateMatch(..)) => allow_private,
+            Err(PrivateMatch(..)) => false,
             Err(IllegalSizedBound { .. }) => true,
             Err(BadReturnType) => false,
+            Err(ErrorReported(_)) => false,
         }
     }
 
@@ -129,8 +132,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     #[instrument(level = "debug", skip(self, err, call_expr))]
     pub(crate) fn suggest_method_call(
         &self,
-        err: &mut Diagnostic,
-        msg: impl Into<SubdiagnosticMessage> + std::fmt::Debug,
+        err: &mut Diag<'_>,
+        msg: impl Into<SubdiagMessage> + std::fmt::Debug,
         method_name: Ident,
         self_ty: Ty<'tcx>,
         call_expr: &hir::Expr<'tcx>,
@@ -176,25 +179,32 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// * `self_expr`:             the self expression (`foo`)
     /// * `args`:                  the expressions of the arguments (`a, b + 1, ...`)
     #[instrument(level = "debug", skip(self))]
-    pub fn lookup_method(
+    pub(crate) fn lookup_method(
         &self,
         self_ty: Ty<'tcx>,
-        segment: &hir::PathSegment<'_>,
+        segment: &'tcx hir::PathSegment<'tcx>,
         span: Span,
         call_expr: &'tcx hir::Expr<'tcx>,
         self_expr: &'tcx hir::Expr<'tcx>,
         args: &'tcx [hir::Expr<'tcx>],
     ) -> Result<MethodCallee<'tcx>, MethodError<'tcx>> {
-        let pick =
-            self.lookup_probe(segment.ident, self_ty, call_expr, ProbeScope::TraitsInScope)?;
+        let scope = if let Some(only_method) = segment.res.opt_def_id() {
+            ProbeScope::Single(only_method)
+        } else {
+            ProbeScope::TraitsInScope
+        };
 
-        self.lint_dot_call_from_2018(self_ty, segment, span, call_expr, self_expr, &pick, args);
+        let pick = self.lookup_probe(segment.ident, self_ty, call_expr, scope)?;
 
-        for import_id in &pick.import_ids {
+        self.lint_edition_dependent_dot_call(
+            self_ty, segment, span, call_expr, self_expr, &pick, args,
+        );
+
+        // NOTE: on the failure path, we also record the possibly-used trait methods
+        // since an unused import warning is kinda distracting from the method error.
+        for &import_id in &pick.import_ids {
             debug!("used_trait_import: {:?}", import_id);
-            Lrc::get_mut(&mut self.typeck_results.borrow_mut().used_trait_imports)
-                .unwrap()
-                .insert(*import_id);
+            self.typeck_results.borrow_mut().used_trait_imports.insert(import_id);
         }
 
         self.tcx.check_stability(pick.item.def_id, Some(call_expr.hir_id), span, None);
@@ -205,11 +215,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         if let Some(span) = result.illegal_sized_bound {
             let mut needs_mut = false;
             if let ty::Ref(region, t_type, mutability) = self_ty.kind() {
-                let trait_type = Ty::new_ref(
-                    self.tcx,
-                    *region,
-                    ty::TypeAndMut { ty: *t_type, mutbl: mutability.invert() },
-                );
+                let trait_type = Ty::new_ref(self.tcx, *region, *t_type, mutability.invert());
                 // We probe again to see if there might be a borrow mutability discrepancy.
                 match self.lookup_probe(
                     segment.ident,
@@ -256,10 +262,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         Ok(result.callee)
     }
 
-    pub fn lookup_method_for_diagnostic(
+    pub(crate) fn lookup_method_for_diagnostic(
         &self,
         self_ty: Ty<'tcx>,
-        segment: &hir::PathSegment<'_>,
+        segment: &hir::PathSegment<'tcx>,
         span: Span,
         call_expr: &'tcx hir::Expr<'tcx>,
         self_expr: &'tcx hir::Expr<'tcx>,
@@ -278,7 +284,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     #[instrument(level = "debug", skip(self, call_expr))]
-    pub fn lookup_probe(
+    pub(crate) fn lookup_probe(
         &self,
         method_name: Ident,
         self_ty: Ty<'tcx>,
@@ -298,7 +304,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         Ok(pick)
     }
 
-    pub fn lookup_probe_for_diagnostic(
+    pub(crate) fn lookup_probe_for_diagnostic(
         &self,
         method_name: Ident,
         self_ty: Ty<'tcx>,
@@ -324,9 +330,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         trait_def_id: DefId,
         self_ty: Ty<'tcx>,
         opt_input_types: Option<&[Ty<'tcx>]>,
-    ) -> (traits::PredicateObligation<'tcx>, &'tcx ty::List<ty::subst::GenericArg<'tcx>>) {
+    ) -> (traits::PredicateObligation<'tcx>, ty::GenericArgsRef<'tcx>) {
         // Construct a trait-reference `self_ty : Trait<input_tys>`
-        let substs = InternalSubsts::for_item(self.tcx, trait_def_id, |param, _| {
+        let args = GenericArgs::for_item(self.tcx, trait_def_id, |param, _| {
             match param.kind {
                 GenericParamDefKind::Lifetime | GenericParamDefKind::Const { .. } => {}
                 GenericParamDefKind::Type { .. } => {
@@ -340,19 +346,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             self.var_for_def(cause.span, param)
         });
 
-        let trait_ref = ty::TraitRef::new(self.tcx, trait_def_id, substs);
+        let trait_ref = ty::TraitRef::new_from_args(self.tcx, trait_def_id, args);
 
         // Construct an obligation
         let poly_trait_ref = ty::Binder::dummy(trait_ref);
-        (
-            traits::Obligation::new(
-                self.tcx,
-                cause,
-                self.param_env,
-                poly_trait_ref.without_const(),
-            ),
-            substs,
-        )
+        (traits::Obligation::new(self.tcx, cause, self.param_env, poly_trait_ref), args)
     }
 
     /// `lookup_method_in_trait` is used for overloaded operators.
@@ -369,9 +367,20 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         self_ty: Ty<'tcx>,
         opt_input_types: Option<&[Ty<'tcx>]>,
     ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
-        let (obligation, substs) =
+        let (obligation, args) =
             self.obligation_for_method(cause, trait_def_id, self_ty, opt_input_types);
-        self.construct_obligation_for_trait(m_name, trait_def_id, obligation, substs)
+        // FIXME(effects) find a better way to do this
+        // Operators don't have generic methods, but making them `#[const_trait]` gives them
+        // `const host: bool`.
+        let args = if self.tcx.is_const_trait(trait_def_id) {
+            self.tcx.mk_args_from_iter(
+                args.iter()
+                    .chain([self.tcx.expected_host_effect_param_for_body(self.body_id).into()]),
+            )
+        } else {
+            args
+        };
+        self.construct_obligation_for_trait(m_name, trait_def_id, obligation, args)
     }
 
     // FIXME(#18741): it seems likely that we can consolidate some of this
@@ -382,7 +391,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         m_name: Ident,
         trait_def_id: DefId,
         obligation: traits::PredicateObligation<'tcx>,
-        substs: &'tcx ty::List<ty::subst::GenericArg<'tcx>>,
+        args: ty::GenericArgsRef<'tcx>,
     ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
         debug!(?obligation);
 
@@ -397,38 +406,26 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // type parameters or early-bound regions.
         let tcx = self.tcx;
         let Some(method_item) = self.associated_value(trait_def_id, m_name) else {
-            tcx.sess.delay_span_bug(
-                obligation.cause.span,
-                "operator trait does not have corresponding operator method",
-            );
-            return None;
+            bug!("expected associated item for operator trait")
         };
 
-        if method_item.kind != ty::AssocKind::Fn {
-            self.tcx.sess.delay_span_bug(tcx.def_span(method_item.def_id), "not a method");
-            return None;
-        }
-
         let def_id = method_item.def_id;
-        let generics = tcx.generics_of(def_id);
-
-        if generics.params.len() != 0 {
-            tcx.sess.emit_fatal(OpMethodGenericParams {
-                span: tcx.def_span(method_item.def_id),
-                method_name: m_name.to_string(),
-            });
+        if method_item.kind != ty::AssocKind::Fn {
+            span_bug!(tcx.def_span(def_id), "expected `{m_name}` to be an associated function");
         }
 
         debug!("lookup_in_trait_adjusted: method_item={:?}", method_item);
-        let mut obligations = vec![];
+        let mut obligations = PredicateObligations::new();
 
-        // Instantiate late-bound regions and substitute the trait
+        // FIXME(effects): revisit when binops get `#[const_trait]`
+
+        // Instantiate late-bound regions and instantiate the trait
         // parameters into the method type to get the actual method type.
         //
         // N.B., instantiate late-bound regions before normalizing the
         // function signature so that normalization does not need to deal
         // with bound regions.
-        let fn_sig = tcx.fn_sig(def_id).subst(self.tcx, substs);
+        let fn_sig = tcx.fn_sig(def_id).instantiate(self.tcx, args);
         let fn_sig =
             self.instantiate_binder_with_fresh_vars(obligation.cause.span, infer::FnCall, fn_sig);
 
@@ -447,7 +444,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         //
         // Note that as the method comes from a trait, it should not have
         // any late-bound regions appearing in its bounds.
-        let bounds = self.tcx.predicates_of(def_id).instantiate(self.tcx, substs);
+        let bounds = self.tcx.predicates_of(def_id).instantiate(self.tcx, args);
 
         let InferOk { value, obligations: o } =
             self.at(&obligation.cause, self.param_env).normalize(bounds);
@@ -480,7 +477,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             ))),
         ));
 
-        let callee = MethodCallee { def_id, substs, sig: fn_sig };
+        let callee = MethodCallee { def_id, args, sig: fn_sig };
 
         debug!("callee = {:?}", callee);
 
@@ -504,7 +501,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// * `self_ty_span`           the span for the type being searched within (span of `Foo`)
     /// * `expr_id`:               the [`hir::HirId`] of the expression composing the entire call
     #[instrument(level = "debug", skip(self), ret)]
-    pub fn resolve_fully_qualified_call(
+    pub(crate) fn resolve_fully_qualified_call(
         &self,
         span: Span,
         method_name: Ident,
@@ -567,10 +564,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         debug!(?pick);
         {
             let mut typeck_results = self.typeck_results.borrow_mut();
-            let used_trait_imports = Lrc::get_mut(&mut typeck_results.used_trait_imports).unwrap();
             for import_id in pick.import_ids {
                 debug!(used_trait_import=?import_id);
-                used_trait_imports.insert(import_id);
+                typeck_results.used_trait_imports.insert(import_id);
             }
         }
 
@@ -581,7 +577,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Finds item with name `item_name` defined in impl/trait `def_id`
     /// and return it, or `None`, if no such item was defined there.
-    pub fn associated_value(&self, def_id: DefId, item_name: Ident) -> Option<ty::AssocItem> {
+    fn associated_value(&self, def_id: DefId, item_name: Ident) -> Option<ty::AssocItem> {
         self.tcx
             .associated_items(def_id)
             .find_by_name_and_namespace(self.tcx, item_name, Namespace::ValueNS, def_id)

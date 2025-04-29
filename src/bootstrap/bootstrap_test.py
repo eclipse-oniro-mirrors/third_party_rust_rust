@@ -4,7 +4,6 @@ Run these with `x test bootstrap`, or `python -m unittest src/bootstrap/bootstra
 
 from __future__ import absolute_import, division, print_function
 import os
-import doctest
 import unittest
 import tempfile
 import hashlib
@@ -16,11 +15,14 @@ from shutil import rmtree
 bootstrap_dir = os.path.dirname(os.path.abspath(__file__))
 # For the import below, have Python search in src/bootstrap first.
 sys.path.insert(0, bootstrap_dir)
-import bootstrap
-import configure
+import bootstrap # noqa: E402
+import configure # noqa: E402
 
-def serialize_and_parse(configure_args, bootstrap_args=bootstrap.FakeArgs()):
+def serialize_and_parse(configure_args, bootstrap_args=None):
     from io import StringIO
+
+    if bootstrap_args is None:
+        bootstrap_args = bootstrap.FakeArgs()
 
     section_order, sections, targets = configure.parse_args(configure_args)
     buffer = StringIO()
@@ -32,7 +34,7 @@ def serialize_and_parse(configure_args, bootstrap_args=bootstrap.FakeArgs()):
         # Verify this is actually valid TOML.
         tomllib.loads(build.config_toml)
     except ImportError:
-        print("warning: skipping TOML validation, need at least python 3.11", file=sys.stderr)
+        print("WARNING: skipping TOML validation, need at least python 3.11", file=sys.stderr)
     return build
 
 
@@ -101,7 +103,6 @@ class GenerateAndParseConfig(unittest.TestCase):
     """Test that we can serialize and deserialize a config.toml file"""
     def test_no_args(self):
         build = serialize_and_parse([])
-        self.assertEqual(build.get_toml("changelog-seen"), '2')
         self.assertEqual(build.get_toml("profile"), 'dist')
         self.assertIsNone(build.get_toml("llvm.download-ci-llvm"))
 
@@ -129,7 +130,33 @@ class GenerateAndParseConfig(unittest.TestCase):
 class BuildBootstrap(unittest.TestCase):
     """Test that we generate the appropriate arguments when building bootstrap"""
 
-    def build_args(self, configure_args=[], args=[], env={}):
+    def build_args(self, configure_args=None, args=None, env=None):
+        if configure_args is None:
+            configure_args = []
+        if args is None:
+            args = []
+        if env is None:
+            env = {}
+
+        # This test ends up invoking build_bootstrap_cmd, which searches for
+        # the Cargo binary and errors out if it cannot be found. This is not a
+        # problem in most cases, but there is a scenario where it would cause
+        # the test to fail.
+        #
+        # When a custom local Cargo is configured in config.toml (with the
+        # build.cargo setting), no Cargo is downloaded to any location known by
+        # bootstrap, and bootstrap relies on that setting to find it.
+        #
+        # In this test though we are not using the config.toml of the caller:
+        # we are generating a blank one instead. If we don't set build.cargo in
+        # it, the test will have no way to find Cargo, failing the test.
+        cargo_bin = os.environ.get("BOOTSTRAP_TEST_CARGO_BIN")
+        if cargo_bin is not None:
+            configure_args += ["--set", "build.cargo=" + cargo_bin]
+        rustc_bin = os.environ.get("BOOTSTRAP_TEST_RUSTC_BIN")
+        if rustc_bin is not None:
+            configure_args += ["--set", "build.rustc=" + rustc_bin]
+
         env = env.copy()
         env["PATH"] = os.environ["PATH"]
 

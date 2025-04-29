@@ -1,17 +1,19 @@
+use clippy_config::Conf;
+use clippy_config::msrvs::{self, Msrv};
 use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::macros::span_is_local;
-use clippy_utils::msrvs::{self, Msrv};
 use clippy_utils::path_def_id;
-use clippy_utils::source::snippet_opt;
+use clippy_utils::source::SpanRangeExt;
 use rustc_errors::Applicability;
-use rustc_hir::intravisit::{walk_path, Visitor};
+use rustc_hir::intravisit::{Visitor, walk_path};
 use rustc_hir::{
-    GenericArg, GenericArgs, HirId, Impl, ImplItemKind, ImplItemRef, Item, ItemKind, PatKind, Path, PathSegment, Ty,
-    TyKind,
+    FnRetTy, GenericArg, GenericArgs, HirId, Impl, ImplItemKind, ImplItemRef, Item, ItemKind, PatKind, Path,
+    PathSegment, Ty, TyKind,
 };
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_middle::{hir::nested_filter::OnlyBodies, ty};
-use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_middle::hir::nested_filter::OnlyBodies;
+use rustc_middle::ty;
+use rustc_session::impl_lint_pass;
 use rustc_span::symbol::{kw, sym};
 use rustc_span::{Span, Symbol};
 
@@ -23,7 +25,7 @@ declare_clippy_lint! {
     /// According the std docs implementing `From<..>` is preferred since it gives you `Into<..>` for free where the reverse isn't true.
     ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// struct StringWrapper(String);
     ///
     /// impl Into<StringWrapper> for String {
@@ -33,7 +35,7 @@ declare_clippy_lint! {
     /// }
     /// ```
     /// Use instead:
-    /// ```rust
+    /// ```no_run
     /// struct StringWrapper(String);
     ///
     /// impl From<String> for StringWrapper {
@@ -53,9 +55,10 @@ pub struct FromOverInto {
 }
 
 impl FromOverInto {
-    #[must_use]
-    pub fn new(msrv: Msrv) -> Self {
-        FromOverInto { msrv }
+    pub fn new(conf: &'static Conf) -> Self {
+        FromOverInto {
+            msrv: conf.msrv.clone(),
+        }
     }
 }
 
@@ -63,10 +66,6 @@ impl_lint_pass!(FromOverInto => [FROM_OVER_INTO]);
 
 impl<'tcx> LateLintPass<'tcx> for FromOverInto {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx Item<'_>) {
-        if !self.msrv.meets(msrvs::RE_REBALANCING_COHERENCE) || !span_is_local(item.span) {
-            return;
-        }
-
         if let ItemKind::Impl(Impl {
             of_trait: Some(hir_trait_ref),
             self_ty,
@@ -76,9 +75,12 @@ impl<'tcx> LateLintPass<'tcx> for FromOverInto {
             && let Some(into_trait_seg) = hir_trait_ref.path.segments.last()
             // `impl Into<target_ty> for self_ty`
             && let Some(GenericArgs { args: [GenericArg::Type(target_ty)], .. }) = into_trait_seg.args
-            && let Some(middle_trait_ref) = cx.tcx.impl_trait_ref(item.owner_id).map(ty::EarlyBinder::subst_identity)
+            && self.msrv.meets(msrvs::RE_REBALANCING_COHERENCE)
+            && span_is_local(item.span)
+            && let Some(middle_trait_ref) = cx.tcx.impl_trait_ref(item.owner_id)
+                                                  .map(ty::EarlyBinder::instantiate_identity)
             && cx.tcx.is_diagnostic_item(sym::Into, middle_trait_ref.def_id)
-            && !matches!(middle_trait_ref.substs.type_at(1).kind(), ty::Alias(ty::Opaque, _))
+            && !matches!(middle_trait_ref.args.type_at(1).kind(), ty::Alias(ty::Opaque, _))
         {
             span_lint_and_then(
                 cx,
@@ -86,7 +88,8 @@ impl<'tcx> LateLintPass<'tcx> for FromOverInto {
                 cx.tcx.sess.source_map().guess_head_span(item.span),
                 "an implementation of `From` is preferred since it gives you `Into<_>` for free where the reverse isn't true",
                 |diag| {
-                    // If the target type is likely foreign mention the orphan rules as it's a common source of confusion
+                    // If the target type is likely foreign mention the orphan rules as it's a common source of
+                    // confusion
                     if path_def_id(cx, target_ty.peel_refs()).map_or(true, |id| !id.is_local()) {
                         diag.help(
                             "`impl From<Local> for Foreign` is allowed by the orphan rules, for more information see\n\
@@ -94,7 +97,10 @@ impl<'tcx> LateLintPass<'tcx> for FromOverInto {
                         );
                     }
 
-                    let message = format!("replace the `Into` implementation with `From<{}>`", middle_trait_ref.self_ty());
+                    let message = format!(
+                        "replace the `Into` implementation with `From<{}>`",
+                        middle_trait_ref.self_ty()
+                    );
                     if let Some(suggestions) = convert_to_from(cx, into_trait_seg, target_ty, self_ty, impl_item_ref) {
                         diag.multipart_suggestion(message, suggestions, Applicability::MachineApplicable);
                     } else {
@@ -108,19 +114,19 @@ impl<'tcx> LateLintPass<'tcx> for FromOverInto {
     extract_msrv_attr!(LateContext);
 }
 
-/// Finds the occurences of `Self` and `self`
+/// Finds the occurrences of `Self` and `self`
 struct SelfFinder<'a, 'tcx> {
     cx: &'a LateContext<'tcx>,
-    /// Occurences of `Self`
+    /// Occurrences of `Self`
     upper: Vec<Span>,
-    /// Occurences of `self`
+    /// Occurrences of `self`
     lower: Vec<Span>,
     /// If any of the `self`/`Self` usages were from an expansion, or the body contained a binding
     /// already named `val`
     invalid: bool,
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for SelfFinder<'a, 'tcx> {
+impl<'tcx> Visitor<'tcx> for SelfFinder<'_, 'tcx> {
     type NestedFilter = OnlyBodies;
 
     fn nested_visit_map(&mut self) -> Self::Map {
@@ -163,13 +169,17 @@ fn convert_to_from(
         return None;
     }
     let impl_item = cx.tcx.hir().impl_item(impl_item_ref.id);
-    let ImplItemKind::Fn(ref sig, body_id) = impl_item.kind else { return None };
+    let ImplItemKind::Fn(ref sig, body_id) = impl_item.kind else {
+        return None;
+    };
     let body = cx.tcx.hir().body(body_id);
     let [input] = body.params else { return None };
-    let PatKind::Binding(.., self_ident, None) = input.pat.kind else { return None };
+    let PatKind::Binding(.., self_ident, None) = input.pat.kind else {
+        return None;
+    };
 
-    let from = snippet_opt(cx, self_ty.span)?;
-    let into = snippet_opt(cx, target_ty.span)?;
+    let from = self_ty.span.get_source_text(cx)?;
+    let into = target_ty.span.get_source_text(cx)?;
 
     let mut suggestions = vec![
         // impl Into<T> for U  ->  impl From<T> for U
@@ -177,20 +187,23 @@ fn convert_to_from(
         (into_trait_seg.ident.span, String::from("From")),
         // impl Into<T> for U  ->  impl Into<U> for U
         //           ~                       ~
-        (target_ty.span, from.clone()),
+        (target_ty.span, from.to_owned()),
         // impl Into<T> for U  ->  impl Into<T> for T
         //                  ~                       ~
-        (self_ty.span, into),
+        (self_ty.span, into.to_owned()),
         // fn into(self) -> T  ->  fn from(self) -> T
         //    ~~~~                    ~~~~
         (impl_item.ident.span, String::from("from")),
         // fn into([mut] self) -> T  ->  fn into([mut] v: T) -> T
         //               ~~~~                          ~~~~
         (self_ident.span, format!("val: {from}")),
+    ];
+
+    if let FnRetTy::Return(_) = sig.decl.output {
         // fn into(self) -> T  ->  fn into(self) -> Self
         //                  ~                       ~~~~
-        (sig.decl.output.span(), String::from("Self")),
-    ];
+        suggestions.push((sig.decl.output.span(), String::from("Self")));
+    }
 
     let mut finder = SelfFinder {
         cx,
@@ -210,7 +223,7 @@ fn convert_to_from(
     }
 
     for span in finder.upper {
-        suggestions.push((span, from.clone()));
+        suggestions.push((span, from.to_owned()));
     }
     for span in finder.lower {
         suggestions.push((span, String::from("val")));

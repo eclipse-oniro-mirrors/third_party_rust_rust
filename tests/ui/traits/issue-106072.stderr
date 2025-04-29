@@ -8,7 +8,7 @@ LL | trait Foo {}
    |
    = note: `Foo` must be defined only once in the type namespace of this module
 
-error[E0782]: trait objects must include the `dyn` keyword
+error[E0782]: expected a type, found a trait
   --> $DIR/issue-106072.rs:1:10
    |
 LL | #[derive(Clone)]

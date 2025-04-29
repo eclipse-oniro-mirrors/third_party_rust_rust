@@ -6,6 +6,8 @@ use expect_test::{expect, Expect};
 
 use crate::tests::{completion_list, BASE_ITEMS_FIXTURE};
 
+use super::check_edit;
+
 fn check(ra_fixture: &str, expect: Expect) {
     let actual = completion_list(&format!("{BASE_ITEMS_FIXTURE}{ra_fixture}"));
     expect.assert_eq(&actual)
@@ -18,15 +20,15 @@ fn target_type_or_trait_in_impl_block() {
 impl Tra$0
 "#,
         expect![[r#"
-            en Enum
+            en Enum      Enum
             ma makro!(…) macro_rules! makro
             md module
-            st Record
-            st Tuple
-            st Unit
+            st Record    Record
+            st Tuple     Tuple
+            st Unit      Unit
             tt Trait
-            un Union
-            bt u32
+            un Union     Union
+            bt u32       u32
             kw crate::
             kw self::
         "#]],
@@ -40,15 +42,15 @@ fn target_type_in_trait_impl_block() {
 impl Trait for Str$0
 "#,
         expect![[r#"
-            en Enum
+            en Enum      Enum
             ma makro!(…) macro_rules! makro
             md module
-            st Record
-            st Tuple
-            st Unit
+            st Record    Record
+            st Tuple     Tuple
+            st Unit      Unit
             tt Trait
-            un Union
-            bt u32
+            un Union     Union
+            bt u32       u32
             kw crate::
             kw self::
         "#]],
@@ -151,4 +153,91 @@ struct Foo {
             kw pub(super)
         "#]],
     )
+}
+
+#[test]
+fn add_space_after_vis_kw() {
+    check_edit(
+        "pub(crate)",
+        r"
+$0
+",
+        r#"
+pub(crate) $0
+"#,
+    );
+
+    check_edit(
+        "pub",
+        r"
+$0
+",
+        r#"
+pub $0
+"#,
+    );
+
+    check_edit(
+        "pub(super)",
+        r"
+$0
+",
+        r#"
+pub(super) $0
+"#,
+    );
+
+    check_edit(
+        "in",
+        r"
+pub($0)
+",
+        r#"
+pub(in $0)
+"#,
+    );
+}
+
+#[test]
+fn add_space_after_unsafe_kw() {
+    check_edit(
+        "unsafe",
+        r"
+$0
+",
+        r#"
+unsafe $0
+"#,
+    );
+}
+
+#[test]
+fn add_space_after_for_where_kw() {
+    check_edit(
+        "for",
+        r#"
+struct S {}
+
+impl Copy $0
+"#,
+        r#"
+struct S {}
+
+impl Copy for $0
+"#,
+    );
+
+    check_edit(
+        "where",
+        r#"
+struct S {}
+
+impl Copy for S $0
+"#,
+        r#"
+struct S {}
+
+impl Copy for S where $0
+"#,
+    );
 }

@@ -1,8 +1,7 @@
-// no-system-llvm
-// compile-flags: -Coverflow-checks=no -O
-// revisions: YES NO
-// [YES]compile-flags: -Zfewer-names=yes
-// [NO] compile-flags: -Zfewer-names=no
+//@ compile-flags: -Coverflow-checks=no -O
+//@ revisions: YES NO
+//@ [YES]compile-flags: -Zfewer-names=yes
+//@ [NO] compile-flags: -Zfewer-names=no
 #![crate_type = "lib"]
 
 #[no_mangle]
@@ -13,8 +12,8 @@ pub fn sum(x: u32, y: u32) -> u32 {
 
     // NO-LABEL: define{{.*}}i32 @sum(i32 noundef %x, i32 noundef %y)
     // NO-NEXT:  start:
-    // NO-NEXT:    %0 = add i32 %y, %x
-    // NO-NEXT:    ret i32 %0
+    // NO-NEXT:    %z = add i32 %y, %x
+    // NO-NEXT:    ret i32 %z
     let z = x + y;
     z
 }

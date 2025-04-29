@@ -1,8 +1,9 @@
-//@compile-flags: -Zmiri-tree-borrows -Zmiri-tag-gc=0
+// We disable the GC for this test because it would change what is printed.
+//@compile-flags: -Zmiri-tree-borrows -Zmiri-provenance-gc=0
 
 #[path = "../../utils/mod.rs"]
+#[macro_use]
 mod utils;
-use utils::macros::*;
 
 // To check that a reborrow is counted as a Read access, we use a reborrow
 // with no additional Read to Freeze an Active pointer.

@@ -3,14 +3,13 @@ mod tests;
 
 use hashbrown::hash_set as base;
 
+use super::map::map_try_reserve_error;
 use crate::borrow::Borrow;
 use crate::collections::TryReserveError;
 use crate::fmt;
-use crate::hash::{BuildHasher, Hash};
+use crate::hash::{BuildHasher, Hash, RandomState};
 use crate::iter::{Chain, FusedIterator};
 use crate::ops::{BitAnd, BitOr, BitXor, Sub};
-
-use super::map::{map_try_reserve_error, RandomState};
 
 /// A [hash set] implemented as a `HashMap` where the value is `()`.
 ///
@@ -24,13 +23,14 @@ use super::map::{map_try_reserve_error, RandomState};
 /// ```
 ///
 /// In other words, if two keys are equal, their hashes must be equal.
+/// Violating this property is a logic error.
 ///
-///
-/// It is a logic error for a key to be modified in such a way that the key's
+/// It is also a logic error for a key to be modified in such a way that the key's
 /// hash, as determined by the [`Hash`] trait, or its equality, as determined by
 /// the [`Eq`] trait, changes while it is in the map. This is normally only
 /// possible through [`Cell`], [`RefCell`], global state, I/O, or unsafe code.
-/// The behavior resulting from such a logic error is not specified, but will
+///
+/// The behavior resulting from either logic error is not specified, but will
 /// be encapsulated to the `HashSet` that observed the logic error and not
 /// result in undefined behavior. This could include panics, incorrect results,
 /// aborts, memory leaks, and non-termination.
@@ -65,8 +65,8 @@ use super::map::{map_try_reserve_error, RandomState};
 /// ```
 ///
 /// The easiest way to use `HashSet` with a custom type is to derive
-/// [`Eq`] and [`Hash`]. We must also derive [`PartialEq`], this will in the
-/// future be implied by [`Eq`].
+/// [`Eq`] and [`Hash`]. We must also derive [`PartialEq`],
+/// which is required if [`Eq`] is derived.
 ///
 /// ```
 /// use std::collections::HashSet;
@@ -143,7 +143,7 @@ impl<T> HashSet<T, RandomState> {
     #[must_use]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn with_capacity(capacity: usize) -> HashSet<T, RandomState> {
-        HashSet { base: base::HashSet::with_capacity_and_hasher(capacity, Default::default()) }
+        HashSet::with_capacity_and_hasher(capacity, Default::default())
     }
 }
 
@@ -187,6 +187,7 @@ impl<T, S> HashSet<T, S> {
     #[inline]
     #[rustc_lint_query_instability]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "hashset_iter")]
     pub fn iter(&self) -> Iter<'_, T> {
         Iter { base: self.base.iter() }
     }
@@ -360,7 +361,7 @@ impl<T, S> HashSet<T, S> {
     ///
     /// ```
     /// use std::collections::HashSet;
-    /// use std::collections::hash_map::RandomState;
+    /// use std::hash::RandomState;
     ///
     /// let s = RandomState::new();
     /// let mut set = HashSet::with_hasher(s);
@@ -392,7 +393,7 @@ impl<T, S> HashSet<T, S> {
     ///
     /// ```
     /// use std::collections::HashSet;
-    /// use std::collections::hash_map::RandomState;
+    /// use std::hash::RandomState;
     ///
     /// let s = RandomState::new();
     /// let mut set = HashSet::with_capacity_and_hasher(10, s);
@@ -410,7 +411,7 @@ impl<T, S> HashSet<T, S> {
     ///
     /// ```
     /// use std::collections::HashSet;
-    /// use std::collections::hash_map::RandomState;
+    /// use std::hash::RandomState;
     ///
     /// let hasher = RandomState::new();
     /// let set: HashSet<i32> = HashSet::with_hasher(hasher);
@@ -723,38 +724,6 @@ where
         self.base.get_or_insert(value)
     }
 
-    /// Inserts an owned copy of the given `value` into the set if it is not
-    /// present, then returns a reference to the value in the set.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(hash_set_entry)]
-    ///
-    /// use std::collections::HashSet;
-    ///
-    /// let mut set: HashSet<String> = ["cat", "dog", "horse"]
-    ///     .iter().map(|&pet| pet.to_owned()).collect();
-    ///
-    /// assert_eq!(set.len(), 3);
-    /// for &pet in &["cat", "dog", "fish"] {
-    ///     let value = set.get_or_insert_owned(pet);
-    ///     assert_eq!(value, pet);
-    /// }
-    /// assert_eq!(set.len(), 4); // a new "fish" was inserted
-    /// ```
-    #[inline]
-    #[unstable(feature = "hash_set_entry", issue = "60896")]
-    pub fn get_or_insert_owned<Q: ?Sized>(&mut self, value: &Q) -> &T
-    where
-        T: Borrow<Q>,
-        Q: Hash + Eq + ToOwned<Owned = T>,
-    {
-        // Although the raw entry gives us `&mut T`, we only return `&T` to be consistent with
-        // `get`. Key mutation is "raw" because you're not supposed to affect `Eq` or `Hash`.
-        self.base.get_or_insert_owned(value)
-    }
-
     /// Inserts a value computed from `f` into the set if the given `value` is
     /// not present, then returns a reference to the value in the set.
     ///
@@ -884,6 +853,7 @@ where
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("push", "append", "put")]
     pub fn insert(&mut self, value: T) -> bool {
         self.base.insert(value)
     }
@@ -905,6 +875,7 @@ where
     /// ```
     #[inline]
     #[stable(feature = "set_recovery", since = "1.9.0")]
+    #[rustc_confusables("swap")]
     pub fn replace(&mut self, value: T) -> Option<T> {
         self.base.replace(value)
     }
@@ -929,6 +900,7 @@ where
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("delete", "take")]
     pub fn remove<Q: ?Sized>(&mut self, value: &Q) -> bool
     where
         T: Borrow<Q>,
@@ -974,6 +946,10 @@ where
         Self { base: self.base.clone() }
     }
 
+    /// Overwrites the contents of `self` with a clone of the contents of `source`.
+    ///
+    /// This method is preferred over simply assigning `source.clone()` to `self`,
+    /// as it avoids reallocation if possible.
     #[inline]
     fn clone_from(&mut self, other: &Self) {
         self.base.clone_from(&other.base);
@@ -1263,8 +1239,17 @@ where
 /// let mut iter = a.iter();
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "hashset_iter_ty")]
 pub struct Iter<'a, K: 'a> {
     base: base::Iter<'a, K>,
+}
+
+#[stable(feature = "default_iters_hash", since = "1.83.0")]
+impl<K> Default for Iter<'_, K> {
+    #[inline]
+    fn default() -> Self {
+        Iter { base: Default::default() }
+    }
 }
 
 /// An owning iterator over the items of a `HashSet`.
@@ -1288,6 +1273,14 @@ pub struct IntoIter<K> {
     base: base::IntoIter<K>,
 }
 
+#[stable(feature = "default_iters_hash", since = "1.83.0")]
+impl<K> Default for IntoIter<K> {
+    #[inline]
+    fn default() -> Self {
+        IntoIter { base: Default::default() }
+    }
+}
+
 /// A draining iterator over the items of a `HashSet`.
 ///
 /// This `struct` is created by the [`drain`] method on [`HashSet`].
@@ -1305,6 +1298,7 @@ pub struct IntoIter<K> {
 /// let mut drain = a.drain();
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "hashset_drain_ty")]
 pub struct Drain<'a, K: 'a> {
     base: base::Drain<'a, K>,
 }
@@ -1499,6 +1493,18 @@ impl<'a, K> Iterator for Iter<'a, K> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.base.size_hint()
     }
+    #[inline]
+    fn count(self) -> usize {
+        self.base.len()
+    }
+    #[inline]
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.base.fold(init, f)
+    }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<K> ExactSizeIterator for Iter<'_, K> {
@@ -1529,6 +1535,18 @@ impl<K> Iterator for IntoIter<K> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.base.size_hint()
     }
+    #[inline]
+    fn count(self) -> usize {
+        self.base.len()
+    }
+    #[inline]
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.base.fold(init, f)
+    }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<K> ExactSizeIterator for IntoIter<K> {
@@ -1558,6 +1576,14 @@ impl<'a, K> Iterator for Drain<'a, K> {
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.base.size_hint()
+    }
+    #[inline]
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.base.fold(init, f)
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1638,6 +1664,15 @@ where
         let (_, upper) = self.iter.size_hint();
         (0, upper)
     }
+
+    #[inline]
+    fn fold<B, F>(self, init: B, mut f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.iter.fold(init, |acc, elt| if self.other.contains(elt) { f(acc, elt) } else { acc })
+    }
 }
 
 #[stable(feature = "std_debug", since = "1.16.0")]
@@ -1690,6 +1725,15 @@ where
         let (_, upper) = self.iter.size_hint();
         (0, upper)
     }
+
+    #[inline]
+    fn fold<B, F>(self, init: B, mut f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.iter.fold(init, |acc, elt| if self.other.contains(elt) { acc } else { f(acc, elt) })
+    }
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
@@ -1734,6 +1778,14 @@ where
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
+    }
+    #[inline]
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.iter.fold(init, f)
     }
 }
 
@@ -1798,6 +1850,18 @@ where
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
+    }
+    #[inline]
+    fn count(self) -> usize {
+        self.iter.count()
+    }
+    #[inline]
+    fn fold<B, F>(self, init: B, f: F) -> B
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> B,
+    {
+        self.iter.fold(init, f)
     }
 }
 

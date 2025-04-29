@@ -134,15 +134,22 @@ fn structure_node(node: &SyntaxNode) -> Option<StructureNode> {
                 if let Some(type_param_list) = it.generic_param_list() {
                     collapse_ws(type_param_list.syntax(), &mut detail);
                 }
-                if let Some(param_list) = it.param_list() {
+                let has_self_param = if let Some(param_list) = it.param_list() {
                     collapse_ws(param_list.syntax(), &mut detail);
-                }
+                    param_list.self_param().is_some()
+                } else {
+                    false
+                };
                 if let Some(ret_type) = it.ret_type() {
                     detail.push(' ');
                     collapse_ws(ret_type.syntax(), &mut detail);
                 }
 
-                decl_with_detail(&it, Some(detail), StructureNodeKind::SymbolKind(SymbolKind::Function))
+                decl_with_detail(&it, Some(detail), StructureNodeKind::SymbolKind(if has_self_param {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Function
+                }))
             },
             ast::Struct(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::Struct)),
             ast::Union(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::Union)),
@@ -190,10 +197,12 @@ fn structure_token(token: SyntaxToken) -> Option<StructureNode> {
     if let Some(comment) = ast::Comment::cast(token) {
         let text = comment.text().trim();
 
-        if let Some(region_name) = text.strip_prefix("// region:").map(str::trim) {
+        if let Some(region_name) =
+            text.strip_prefix("// region:").map(str::trim).filter(|it| !it.is_empty())
+        {
             return Some(StructureNode {
                 parent: None,
-                label: region_name.to_string(),
+                label: region_name.to_owned(),
                 navigation_range: comment.syntax().text_range(),
                 node_range: comment.syntax().text_range(),
                 kind: StructureNodeKind::Region,
@@ -213,7 +222,7 @@ mod tests {
     use super::*;
 
     fn check(ra_fixture: &str, expect: Expect) {
-        let file = SourceFile::parse(ra_fixture).ok().unwrap();
+        let file = SourceFile::parse(ra_fixture, span::Edition::CURRENT).ok().unwrap();
         let structure = file_structure(&file);
         expect.assert_debug_eq(&structure)
     }

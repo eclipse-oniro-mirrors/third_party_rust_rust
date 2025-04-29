@@ -4,10 +4,12 @@ use std::iter;
 
 use crate::{lower::LowerCtx, type_ref::ConstRef};
 
-use either::Either;
-use hir_expand::name::{name, AsName};
-use intern::Interned;
-use syntax::ast::{self, AstNode, HasTypeBounds};
+use hir_expand::{
+    mod_path::resolve_crate_root,
+    name::{AsName, Name},
+};
+use intern::{sym, Interned};
+use syntax::ast::{self, AstNode, HasGenericArgs, HasTypeBounds};
 
 use crate::{
     path::{AssociatedTypeBinding, GenericArg, GenericArgs, ModPath, Path, PathKind},
@@ -16,12 +18,12 @@ use crate::{
 
 /// Converts an `ast::Path` to `Path`. Works with use trees.
 /// It correctly handles `$crate` based path from macro call.
-pub(super) fn lower_path(mut path: ast::Path, ctx: &LowerCtx<'_>) -> Option<Path> {
+pub(super) fn lower_path(ctx: &LowerCtx<'_>, mut path: ast::Path) -> Option<Path> {
     let mut kind = PathKind::Plain;
     let mut type_anchor = None;
     let mut segments = Vec::new();
     let mut generic_args = Vec::new();
-    let hygiene = ctx.hygiene();
+    let span_map = ctx.span_map();
     loop {
         let segment = path.segment()?;
 
@@ -31,34 +33,34 @@ pub(super) fn lower_path(mut path: ast::Path, ctx: &LowerCtx<'_>) -> Option<Path
 
         match segment.kind()? {
             ast::PathSegmentKind::Name(name_ref) => {
-                // FIXME: this should just return name
-                match hygiene.name_ref_to_name(ctx.db.upcast(), name_ref) {
-                    Either::Left(name) => {
-                        let args = segment
-                            .generic_arg_list()
-                            .and_then(|it| lower_generic_args(ctx, it))
-                            .or_else(|| {
-                                lower_generic_args_from_fn_path(
-                                    ctx,
-                                    segment.param_list(),
-                                    segment.ret_type(),
-                                )
-                            })
-                            .map(Interned::new);
-                        if let Some(_) = args {
-                            generic_args.resize(segments.len(), None);
-                            generic_args.push(args);
-                        }
-                        segments.push(name);
-                    }
-                    Either::Right(crate_id) => {
-                        kind = PathKind::DollarCrate(crate_id);
-                        break;
-                    }
+                if name_ref.text() == "$crate" {
+                    break kind = resolve_crate_root(
+                        ctx.db.upcast(),
+                        span_map.span_for_range(name_ref.syntax().text_range()).ctx,
+                    )
+                    .map(PathKind::DollarCrate)
+                    .unwrap_or(PathKind::Crate);
                 }
+                let name = name_ref.as_name();
+                let args = segment
+                    .generic_arg_list()
+                    .and_then(|it| lower_generic_args(ctx, it))
+                    .or_else(|| {
+                        lower_generic_args_from_fn_path(
+                            ctx,
+                            segment.param_list(),
+                            segment.ret_type(),
+                        )
+                    })
+                    .map(Interned::new);
+                if args.is_some() {
+                    generic_args.resize(segments.len(), None);
+                    generic_args.push(args);
+                }
+                segments.push(name);
             }
             ast::PathSegmentKind::SelfTypeKw => {
-                segments.push(name![Self]);
+                segments.push(Name::new_symbol_root(sym::Self_.clone()));
             }
             ast::PathSegmentKind::Type { type_ref, trait_ref } => {
                 assert!(path.qualifier().is_none()); // this can only occur at the first segment
@@ -74,8 +76,8 @@ pub(super) fn lower_path(mut path: ast::Path, ctx: &LowerCtx<'_>) -> Option<Path
                     // <T as Trait<A>>::Foo desugars to Trait<Self=T, A>::Foo
                     Some(trait_ref) => {
                         let Path::Normal { mod_path, generic_args: path_generic_args, .. } =
-                            Path::from_src(trait_ref.path()?, ctx)? else
-                        {
+                            Path::from_src(ctx, trait_ref.path()?)?
+                        else {
                             return None;
                         };
                         let num_segments = mod_path.segments().len();
@@ -120,7 +122,7 @@ pub(super) fn lower_path(mut path: ast::Path, ctx: &LowerCtx<'_>) -> Option<Path
                 // don't break out if `self` is the last segment of a path, this mean we got a
                 // use tree like `foo::{self}` which we want to resolve as `foo`
                 if !segments.is_empty() {
-                    kind = PathKind::Super(0);
+                    kind = PathKind::SELF;
                     break;
                 }
             }
@@ -142,7 +144,7 @@ pub(super) fn lower_path(mut path: ast::Path, ctx: &LowerCtx<'_>) -> Option<Path
 
     if segments.is_empty() && kind == PathKind::Plain && type_anchor.is_none() {
         // plain empty paths don't exist, this means we got a single `self` segment as our path
-        kind = PathKind::Super(0);
+        kind = PathKind::SELF;
     }
 
     // handle local_inner_macros :
@@ -151,8 +153,14 @@ pub(super) fn lower_path(mut path: ast::Path, ctx: &LowerCtx<'_>) -> Option<Path
     // We follow what it did anyway :)
     if segments.len() == 1 && kind == PathKind::Plain {
         if let Some(_macro_call) = path.syntax().parent().and_then(ast::MacroCall::cast) {
-            if let Some(crate_id) = hygiene.local_inner_macros(ctx.db.upcast(), path) {
-                kind = PathKind::DollarCrate(crate_id);
+            let syn_ctxt = span_map.span_for_range(path.segment()?.syntax().text_range()).ctx;
+            if let Some(macro_call_id) = ctx.db.lookup_intern_syntax_context(syn_ctxt).outer_expn {
+                if ctx.db.lookup_intern_macro_call(macro_call_id).def.local_inner {
+                    kind = match resolve_crate_root(ctx.db.upcast(), syn_ctxt) {
+                        Some(crate_root) => PathKind::DollarCrate(crate_root),
+                        None => PathKind::Crate,
+                    }
+                }
             }
         }
     }
@@ -186,6 +194,11 @@ pub(super) fn lower_generic_args(
         match generic_arg {
             ast::GenericArg::TypeArg(type_arg) => {
                 let type_ref = TypeRef::from_ast_opt(lower_ctx, type_arg.ty());
+                type_ref.walk(&mut |tr| {
+                    if let TypeRef::ImplTrait(bounds) = tr {
+                        lower_ctx.update_impl_traits_bounds(bounds.clone());
+                    }
+                });
                 args.push(GenericArg::Type(type_ref));
             }
             ast::GenericArg::AssocTypeArg(assoc_type_arg) => {
@@ -194,12 +207,21 @@ pub(super) fn lower_generic_args(
                     continue;
                 }
                 if let Some(name_ref) = assoc_type_arg.name_ref() {
+                    // Nested impl traits like `impl Foo<Assoc = impl Bar>` are allowed
+                    let _guard = lower_ctx.outer_impl_trait_scope(false);
                     let name = name_ref.as_name();
                     let args = assoc_type_arg
                         .generic_arg_list()
                         .and_then(|args| lower_generic_args(lower_ctx, args))
                         .map(Interned::new);
                     let type_ref = assoc_type_arg.ty().map(|it| TypeRef::from_ast(lower_ctx, it));
+                    let type_ref = type_ref.inspect(|tr| {
+                        tr.walk(&mut |tr| {
+                            if let TypeRef::ImplTrait(bounds) = tr {
+                                lower_ctx.update_impl_traits_bounds(bounds.clone());
+                            }
+                        });
+                    });
                     let bounds = if let Some(l) = assoc_type_arg.type_bound_list() {
                         l.bounds()
                             .map(|it| Interned::new(TypeBound::from_ast(lower_ctx, it)))
@@ -251,7 +273,7 @@ fn lower_generic_args_from_fn_path(
     let bindings = if let Some(ret_type) = ret_type {
         let type_ref = TypeRef::from_ast_opt(ctx, ret_type.ty());
         Box::new([AssociatedTypeBinding {
-            name: name![Output],
+            name: Name::new_symbol_root(sym::Output.clone()),
             args: None,
             type_ref: Some(type_ref),
             bounds: Box::default(),
@@ -260,7 +282,7 @@ fn lower_generic_args_from_fn_path(
         // -> ()
         let type_ref = TypeRef::Tuple(Vec::new());
         Box::new([AssociatedTypeBinding {
-            name: name![Output],
+            name: Name::new_symbol_root(sym::Output.clone()),
             args: None,
             type_ref: Some(type_ref),
             bounds: Box::default(),

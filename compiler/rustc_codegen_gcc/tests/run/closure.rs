@@ -9,7 +9,8 @@
 //     Both args: 11
 
 #![feature(arbitrary_self_types, auto_traits, lang_items, no_core, start, intrinsics,
-    unboxed_closures)]
+    unboxed_closures, rustc_attrs)]
+#![allow(internal_features)]
 
 #![no_std]
 #![no_core]
@@ -32,6 +33,7 @@ impl Copy for i32 {}
 impl Copy for u32 {}
 impl Copy for u8 {}
 impl Copy for i8 {}
+impl<T: ?Sized> Copy for *mut T {}
 
 #[lang = "receiver"]
 trait Receiver {
@@ -186,6 +188,12 @@ pub fn panic(_msg: &'static str) -> ! {
         libc::puts("Panicking\0" as *const str as *const u8);
         intrinsics::abort();
     }
+}
+
+#[track_caller]
+#[lang = "panic_const_add_overflow"]
+pub fn panic_const_add_overflow() -> ! {
+    panic("attempt to add with overflow");
 }
 
 /*

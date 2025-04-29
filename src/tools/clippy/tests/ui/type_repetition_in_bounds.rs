@@ -1,5 +1,9 @@
 #![deny(clippy::type_repetition_in_bounds)]
-#![allow(clippy::extra_unused_type_parameters)]
+#![allow(
+    clippy::extra_unused_type_parameters,
+    clippy::multiple_bound_locations,
+    clippy::needless_maybe_sized
+)]
 
 use serde::Deserialize;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
@@ -8,6 +12,7 @@ pub fn foo<T>(_t: T)
 where
     T: Copy,
     T: Clone,
+    //~^ ERROR: this type has already been used as a bound predicate
 {
     unimplemented!();
 }
@@ -25,6 +30,7 @@ trait LintBounds
 where
     Self: Clone,
     Self: Copy + Default + Ord,
+    //~^ ERROR: this type has already been used as a bound predicate
     Self: Add<Output = Self> + AddAssign + Sub<Output = Self> + SubAssign,
     Self: Mul<Output = Self> + MulAssign + Div<Output = Self> + DivAssign,
 {
@@ -99,11 +105,13 @@ where
 pub fn f<T: ?Sized>()
 where
     T: Clone,
+    //~^ ERROR: this type has already been used as a bound predicate
 {
 }
 pub fn g<T: Clone>()
 where
     T: ?Sized,
+    //~^ ERROR: this type has already been used as a bound predicate
 {
 }
 
@@ -129,6 +137,7 @@ mod issue8772_pass {
     pub fn f<T: ?Sized, U>(arg: usize)
     where
         T: Trait<Option<usize>, Box<[String]>, bool> + 'static,
+        //~^ ERROR: this type has already been used as a bound predicate
         U: Clone + Sync + 'static,
     {
     }

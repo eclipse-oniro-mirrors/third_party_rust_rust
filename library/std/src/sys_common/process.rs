@@ -2,12 +2,10 @@
 #![unstable(feature = "process_internals", issue = "none")]
 
 use crate::collections::BTreeMap;
-use crate::env;
 use crate::ffi::{OsStr, OsString};
-use crate::fmt;
-use crate::io;
 use crate::sys::pipe::read2;
 use crate::sys::process::{EnvKey, ExitStatus, Process, StdioPipes};
+use crate::{env, fmt, io};
 
 // Stores a set of changes to an environment
 #[derive(Clone)]
@@ -78,6 +76,10 @@ impl CommandEnv {
     pub fn clear(&mut self) {
         self.clear = true;
         self.vars.clear();
+    }
+
+    pub fn does_clear(&self) -> bool {
+        self.clear
     }
 
     pub fn have_changed_path(&self) -> bool {

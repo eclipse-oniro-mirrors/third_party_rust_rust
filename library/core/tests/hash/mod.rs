@@ -1,6 +1,5 @@
 mod sip;
 
-use std::default::Default;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::ptr;
 use std::rc::Rc;
@@ -17,11 +16,8 @@ impl Default for MyHasher {
 
 impl Hasher for MyHasher {
     fn write(&mut self, buf: &[u8]) {
-        // FIXME(const_trait_impl): change to for loop
-        let mut i = 0;
-        while i < buf.len() {
-            self.hash += buf[i] as u64;
-            i += 1;
+        for byte in buf {
+            self.hash += *byte as u64;
         }
     }
     fn write_str(&mut self, s: &str) {
@@ -36,7 +32,8 @@ impl Hasher for MyHasher {
 #[test]
 fn test_writer_hasher() {
     // FIXME(#110395)
-    /* const */ fn hash<T: Hash>(t: &T) -> u64 {
+    /* const */
+    fn hash<T: Hash>(t: &T) -> u64 {
         let mut s = MyHasher { hash: 0 };
         t.hash(&mut s);
         s.finish()
@@ -87,10 +84,10 @@ fn test_writer_hasher() {
     let cs: Rc<[u8]> = Rc::new([1, 2, 3]);
     assert_eq!(hash(&cs), 9);
 
-    let ptr = ptr::invalid::<i32>(5_usize);
+    let ptr = ptr::without_provenance::<i32>(5_usize);
     assert_eq!(hash(&ptr), 5);
 
-    let ptr = ptr::invalid_mut::<i32>(5_usize);
+    let ptr = ptr::without_provenance_mut::<i32>(5_usize);
     assert_eq!(hash(&ptr), 5);
 
     if cfg!(miri) {
@@ -141,7 +138,8 @@ impl Hash for Custom {
 #[test]
 fn test_custom_state() {
     // FIXME(#110395)
-    /* const */ fn hash<T: Hash>(t: &T) -> u64 {
+    /* const */
+    fn hash<T: Hash>(t: &T) -> u64 {
         let mut c = CustomHasher { output: 0 };
         t.hash(&mut c);
         c.finish()
@@ -166,8 +164,8 @@ fn test_indirect_hasher() {
 }
 
 #[test]
-fn test_build_hasher_object_safe() {
-    use std::collections::hash_map::{DefaultHasher, RandomState};
+fn test_build_hasher_dyn_compatible() {
+    use std::hash::{DefaultHasher, RandomState};
 
     let _: &dyn BuildHasher<Hasher = DefaultHasher> = &RandomState::new();
 }

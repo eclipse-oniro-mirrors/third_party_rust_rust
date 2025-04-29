@@ -1,13 +1,10 @@
 use rustc_index::bit_set::ChunkedBitSet;
 use rustc_middle::mir::{Body, TerminatorKind};
-use rustc_middle::ty::subst::SubstsRef;
-use rustc_middle::ty::{self, ParamEnv, Ty, TyCtxt, VariantDef};
+use rustc_middle::ty::{self, GenericArgsRef, ParamEnv, Ty, TyCtxt, VariantDef};
 use rustc_mir_dataflow::impls::MaybeInitializedPlaces;
 use rustc_mir_dataflow::move_paths::{LookupResult, MoveData, MovePathIndex};
-use rustc_mir_dataflow::{self, move_path_children_matching, Analysis, MoveDataParamEnv};
+use rustc_mir_dataflow::{Analysis, MaybeReachable, move_path_children_matching};
 use rustc_target::abi::FieldIdx;
-
-use crate::MirPass;
 
 /// Removes `Drop` terminators whose target is known to be uninitialized at
 /// that point.
@@ -17,19 +14,14 @@ use crate::MirPass;
 /// like [#90770].
 ///
 /// [#90770]: https://github.com/rust-lang/rust/issues/90770
-pub struct RemoveUninitDrops;
+pub(super) struct RemoveUninitDrops;
 
-impl<'tcx> MirPass<'tcx> for RemoveUninitDrops {
+impl<'tcx> crate::MirPass<'tcx> for RemoveUninitDrops {
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         let param_env = tcx.param_env(body.source.def_id());
-        let Ok(move_data) = MoveData::gather_moves(body, tcx, param_env) else {
-            // We could continue if there are move errors, but there's not much point since our
-            // init data isn't complete.
-            return;
-        };
+        let move_data = MoveData::gather_moves(body, tcx, |ty| ty.needs_drop(tcx, param_env));
 
-        let mdpe = MoveDataParamEnv { move_data, param_env };
-        let mut maybe_inits = MaybeInitializedPlaces::new(tcx, body, &mdpe)
+        let mut maybe_inits = MaybeInitializedPlaces::new(tcx, body, &move_data)
             .into_engine(tcx, body)
             .pass_name("remove_uninit_drops")
             .iterate_to_fixpoint()
@@ -38,21 +30,21 @@ impl<'tcx> MirPass<'tcx> for RemoveUninitDrops {
         let mut to_remove = vec![];
         for (bb, block) in body.basic_blocks.iter_enumerated() {
             let terminator = block.terminator();
-            let TerminatorKind::Drop { place, .. } = &terminator.kind
-            else { continue };
+            let TerminatorKind::Drop { place, .. } = &terminator.kind else { continue };
 
             maybe_inits.seek_before_primary_effect(body.terminator_loc(bb));
+            let MaybeReachable::Reachable(maybe_inits) = maybe_inits.get() else { continue };
 
             // If there's no move path for the dropped place, it's probably a `Deref`. Let it alone.
-            let LookupResult::Exact(mpi) = mdpe.move_data.rev_lookup.find(place.as_ref()) else {
+            let LookupResult::Exact(mpi) = move_data.rev_lookup.find(place.as_ref()) else {
                 continue;
             };
 
             let should_keep = is_needs_drop_and_init(
                 tcx,
                 param_env,
-                maybe_inits.get(),
-                &mdpe.move_data,
+                maybe_inits,
+                &move_data,
                 place.ty(body, tcx).ty,
                 mpi,
             );
@@ -64,9 +56,9 @@ impl<'tcx> MirPass<'tcx> for RemoveUninitDrops {
         for bb in to_remove {
             let block = &mut body.basic_blocks_mut()[bb];
 
-            let TerminatorKind::Drop { target, .. }
-                = &block.terminator().kind
-            else { unreachable!() };
+            let TerminatorKind::Drop { target, .. } = &block.terminator().kind else {
+                unreachable!()
+            };
 
             // Replace block terminator with `Goto`.
             block.terminator_mut().kind = TerminatorKind::Goto { target: *target };
@@ -99,7 +91,7 @@ fn is_needs_drop_and_init<'tcx>(
     // This pass is only needed for const-checking, so it doesn't handle as many cases as
     // `DropCtxt::open_drop`, since they aren't relevant in a const-context.
     match ty.kind() {
-        ty::Adt(adt, substs) => {
+        ty::Adt(adt, args) => {
             let dont_elaborate = adt.is_union() || adt.is_manually_drop() || adt.has_dtor(tcx);
             if dont_elaborate {
                 return true;
@@ -113,13 +105,14 @@ fn is_needs_drop_and_init<'tcx>(
             // If its projection *is* present in `MoveData`, then the field may have been moved
             // from separate from its parent. Recurse.
             adt.variants().iter_enumerated().any(|(vid, variant)| {
-                // Enums have multiple variants, which are discriminated with a `Downcast` projection.
-                // Structs have a single variant, and don't use a `Downcast` projection.
+                // Enums have multiple variants, which are discriminated with a `Downcast`
+                // projection. Structs have a single variant, and don't use a `Downcast`
+                // projection.
                 let mpi = if adt.is_enum() {
                     let downcast =
                         move_path_children_matching(move_data, mpi, |x| x.is_downcast_to(vid));
                     let Some(dc_mpi) = downcast else {
-                        return variant_needs_drop(tcx, param_env, substs, variant);
+                        return variant_needs_drop(tcx, param_env, args, variant);
                     };
 
                     dc_mpi
@@ -131,7 +124,7 @@ fn is_needs_drop_and_init<'tcx>(
                     .fields
                     .iter()
                     .enumerate()
-                    .map(|(f, field)| (FieldIdx::from_usize(f), field.ty(tcx, substs), mpi))
+                    .map(|(f, field)| (FieldIdx::from_usize(f), field.ty(tcx, args), mpi))
                     .any(field_needs_drop_and_init)
             })
         }
@@ -149,11 +142,11 @@ fn is_needs_drop_and_init<'tcx>(
 fn variant_needs_drop<'tcx>(
     tcx: TyCtxt<'tcx>,
     param_env: ParamEnv<'tcx>,
-    substs: SubstsRef<'tcx>,
+    args: GenericArgsRef<'tcx>,
     variant: &VariantDef,
 ) -> bool {
     variant.fields.iter().any(|field| {
-        let f_ty = field.ty(tcx, substs);
+        let f_ty = field.ty(tcx, args);
         f_ty.needs_drop(tcx, param_env)
     })
 }

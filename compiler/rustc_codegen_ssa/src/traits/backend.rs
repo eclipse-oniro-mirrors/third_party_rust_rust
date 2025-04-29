@@ -1,30 +1,27 @@
 use std::any::Any;
-
-use super::write::WriteBackendMethods;
-use super::CodegenObject;
-use crate::back::write::TargetMachineFactoryFn;
-use crate::{CodegenResults, ModuleCodegen};
+use std::hash::Hash;
 
 use rustc_ast::expand::allocator::AllocatorKind;
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_data_structures::sync::{DynSend, DynSync};
 use rustc_errors::ErrorGuaranteed;
 use rustc_metadata::EncodedMetadata;
+use rustc_metadata::creader::MetadataLoaderDyn;
 use rustc_middle::dep_graph::{WorkProduct, WorkProductId};
-use rustc_middle::query::{ExternProviders, Providers};
-use rustc_middle::ty::layout::{FnAbiOf, HasTyCtxt, LayoutOf, TyAndLayout};
-use rustc_middle::ty::{Ty, TyCtxt};
-use rustc_session::{
-    config::{self, OutputFilenames, PrintRequest},
-    cstore::MetadataLoaderDyn,
-    Session,
-};
+use rustc_middle::ty::TyCtxt;
+use rustc_middle::util::Providers;
+use rustc_session::Session;
+use rustc_session::config::{self, OutputFilenames, PrintRequest};
 use rustc_span::symbol::Symbol;
-use rustc_target::abi::call::FnAbi;
-use rustc_target::spec::Target;
+
+use super::CodegenObject;
+use super::write::WriteBackendMethods;
+use crate::back::write::TargetMachineFactoryFn;
+use crate::{CodegenResults, ModuleCodegen};
 
 pub trait BackendTypes {
     type Value: CodegenObject;
+    type Metadata: CodegenObject;
     type Function: CodegenObject;
 
     type BasicBlock: Copy;
@@ -33,26 +30,9 @@ pub trait BackendTypes {
 
     // FIXME(eddyb) find a common convention for all of the debuginfo-related
     // names (choose between `Dbg`, `Debug`, `DebugInfo`, `DI` etc.).
-    type DIScope: Copy;
+    type DIScope: Copy + Hash + PartialEq + Eq;
     type DILocation: Copy;
     type DIVariable: Copy;
-}
-
-pub trait Backend<'tcx>:
-    Sized
-    + BackendTypes
-    + HasTyCtxt<'tcx>
-    + LayoutOf<'tcx, LayoutOfResult = TyAndLayout<'tcx>>
-    + FnAbiOf<'tcx, FnAbiOfResult = &'tcx FnAbi<'tcx, Ty<'tcx>>>
-{
-}
-
-impl<'tcx, T> Backend<'tcx> for T where
-    Self: BackendTypes
-        + HasTyCtxt<'tcx>
-        + LayoutOf<'tcx, LayoutOfResult = TyAndLayout<'tcx>>
-        + FnAbiOf<'tcx, FnAbiOfResult = &'tcx FnAbi<'tcx, Ty<'tcx>>>
-{
 }
 
 pub trait CodegenBackend {
@@ -61,18 +41,16 @@ pub trait CodegenBackend {
     fn locale_resource(&self) -> &'static str;
 
     fn init(&self, _sess: &Session) {}
-    fn print(&self, _req: PrintRequest, _sess: &Session) {}
+
+    fn print(&self, _req: &PrintRequest, _out: &mut String, _sess: &Session) {}
+
     fn target_features(&self, _sess: &Session, _allow_unstable: bool) -> Vec<Symbol> {
         vec![]
     }
-    fn print_passes(&self) {}
-    fn print_version(&self) {}
 
-    /// If this plugin provides additional builtin targets, provide the one enabled by the options here.
-    /// Be careful: this is called *before* init() is called.
-    fn target_override(&self, _opts: &config::Options) -> Option<Target> {
-        None
-    }
+    fn print_passes(&self) {}
+
+    fn print_version(&self) {}
 
     /// The metadata loader used to load rlib and dylib metadata.
     ///
@@ -83,7 +61,7 @@ pub trait CodegenBackend {
     }
 
     fn provide(&self, _providers: &mut Providers) {}
-    fn provide_extern(&self, _providers: &mut ExternProviders) {}
+
     fn codegen_crate<'tcx>(
         &self,
         tcx: TyCtxt<'tcx>,
@@ -101,19 +79,22 @@ pub trait CodegenBackend {
         ongoing_codegen: Box<dyn Any>,
         sess: &Session,
         outputs: &OutputFilenames,
-    ) -> Result<(CodegenResults, FxIndexMap<WorkProductId, WorkProduct>), ErrorGuaranteed>;
+    ) -> (CodegenResults, FxIndexMap<WorkProductId, WorkProduct>);
 
-    /// This is called on the returned `Box<dyn Any>` from `join_codegen`
-    ///
-    /// # Panics
-    ///
-    /// Panics when the passed `Box<dyn Any>` was not returned by `join_codegen`.
+    /// This is called on the returned `CodegenResults` from `join_codegen`
     fn link(
         &self,
         sess: &Session,
         codegen_results: CodegenResults,
         outputs: &OutputFilenames,
     ) -> Result<(), ErrorGuaranteed>;
+
+    /// Returns `true` if this backend can be safely called from multiple threads.
+    ///
+    /// Defaults to `true`.
+    fn supports_parallel(&self) -> bool {
+        true
+    }
 }
 
 pub trait ExtraBackendMethods:
@@ -126,6 +107,7 @@ pub trait ExtraBackendMethods:
         kind: AllocatorKind,
         alloc_error_handler_kind: AllocatorKind,
     ) -> Self::Module;
+
     /// This generates the codegen unit and returns it along with
     /// a `u64` giving an estimate of the unit's processing cost.
     fn compile_codegen_unit(
@@ -133,21 +115,13 @@ pub trait ExtraBackendMethods:
         tcx: TyCtxt<'_>,
         cgu_name: Symbol,
     ) -> (ModuleCodegen<Self::Module>, u64);
+
     fn target_machine_factory(
         &self,
         sess: &Session,
         opt_level: config::OptLevel,
         target_features: &[String],
     ) -> TargetMachineFactoryFn<Self>;
-
-    fn spawn_thread<F, T>(_time_trace: bool, f: F) -> std::thread::JoinHandle<T>
-    where
-        F: FnOnce() -> T,
-        F: Send + 'static,
-        T: Send + 'static,
-    {
-        std::thread::spawn(f)
-    }
 
     fn spawn_named_thread<F, T>(
         _time_trace: bool,

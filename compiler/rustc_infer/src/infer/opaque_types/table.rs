@@ -1,13 +1,13 @@
 use rustc_data_structures::undo_log::UndoLogs;
+use rustc_middle::bug;
 use rustc_middle::ty::{self, OpaqueHiddenType, OpaqueTypeKey, Ty};
-use rustc_span::DUMMY_SP;
-
-use crate::infer::{InferCtxtUndoLogs, UndoLog};
+use tracing::instrument;
 
 use super::{OpaqueTypeDecl, OpaqueTypeMap};
+use crate::infer::snapshot::undo_log::{InferCtxtUndoLogs, UndoLog};
 
 #[derive(Default, Debug, Clone)]
-pub struct OpaqueTypeStorage<'tcx> {
+pub(crate) struct OpaqueTypeStorage<'tcx> {
     /// Opaque types found in explicit return types and their
     /// associated fresh inference variable. Writeback resolves these
     /// variables to get the concrete type, which can be used to
@@ -21,7 +21,8 @@ impl<'tcx> OpaqueTypeStorage<'tcx> {
         if let Some(idx) = idx {
             self.opaque_types.get_mut(&key).unwrap().hidden_type = idx;
         } else {
-            match self.opaque_types.remove(&key) {
+            // FIXME(#120456) - is `swap_remove` correct?
+            match self.opaque_types.swap_remove(&key) {
                 None => bug!("reverted opaque type inference that was never registered: {:?}", key),
                 Some(_) => {}
             }
@@ -40,14 +41,12 @@ impl<'tcx> OpaqueTypeStorage<'tcx> {
 impl<'tcx> Drop for OpaqueTypeStorage<'tcx> {
     fn drop(&mut self) {
         if !self.opaque_types.is_empty() {
-            ty::tls::with(|tcx| {
-                tcx.sess.delay_span_bug(DUMMY_SP, format!("{:?}", self.opaque_types))
-            });
+            ty::tls::with(|tcx| tcx.dcx().delayed_bug(format!("{:?}", self.opaque_types)));
         }
     }
 }
 
-pub struct OpaqueTypeTable<'a, 'tcx> {
+pub(crate) struct OpaqueTypeTable<'a, 'tcx> {
     storage: &'a mut OpaqueTypeStorage<'tcx>,
 
     undo_log: &'a mut InferCtxtUndoLogs<'tcx>,

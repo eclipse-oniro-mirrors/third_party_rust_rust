@@ -1,11 +1,9 @@
-//@aux-build:proc_macros.rs:proc-macro
+//@aux-build:proc_macros.rs
 #![allow(clippy::unnecessary_fold, unused)]
 #![warn(clippy::manual_try_fold)]
 #![feature(try_trait_v2)]
-
-use std::ops::ControlFlow;
-use std::ops::FromResidual;
-use std::ops::Try;
+//@no-rustfix
+use std::ops::{ControlFlow, FromResidual, Try};
 
 #[macro_use]
 extern crate proc_macros;
@@ -97,4 +95,34 @@ fn msrv_juust_right() {
         .iter()
         .fold(Some(0i32), |sum, i| sum?.checked_add(*i))
         .unwrap();
+}
+
+mod issue11876 {
+    struct Foo;
+
+    impl Bar for Foo {
+        type Output = u32;
+    }
+
+    trait Bar: Sized {
+        type Output;
+        fn fold<A, F>(self, init: A, func: F) -> Fold<Self, A, F>
+        where
+            A: Clone,
+            F: Fn(A, Self::Output) -> A,
+        {
+            Fold { this: self, init, func }
+        }
+    }
+
+    #[allow(dead_code)]
+    struct Fold<S, A, F> {
+        this: S,
+        init: A,
+        func: F,
+    }
+
+    fn main() {
+        Foo.fold(Some(0), |acc, entry| Some(acc? + entry));
+    }
 }

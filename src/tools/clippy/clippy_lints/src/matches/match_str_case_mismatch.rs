@@ -2,12 +2,12 @@ use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::ty::is_type_lang_item;
 use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
-use rustc_hir::intravisit::{walk_expr, Visitor};
+use rustc_hir::intravisit::{Visitor, walk_expr};
 use rustc_hir::{Arm, Expr, ExprKind, LangItem, PatKind};
 use rustc_lint::LateContext;
 use rustc_middle::ty;
-use rustc_span::symbol::Symbol;
 use rustc_span::Span;
+use rustc_span::symbol::Symbol;
 
 use super::MATCH_STR_CASE_MISMATCH;
 
@@ -20,21 +20,16 @@ enum CaseMethod {
 }
 
 pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, scrutinee: &'tcx Expr<'_>, arms: &'tcx [Arm<'_>]) {
-    if_chain! {
-        if let ty::Ref(_, ty, _) = cx.typeck_results().expr_ty(scrutinee).kind();
-        if let ty::Str = ty.kind();
-        then {
-            let mut visitor = MatchExprVisitor {
-                cx,
-                case_method: None,
-            };
+    if let ty::Ref(_, ty, _) = cx.typeck_results().expr_ty(scrutinee).kind()
+        && let ty::Str = ty.kind()
+    {
+        let mut visitor = MatchExprVisitor { cx, case_method: None };
 
-            visitor.visit_expr(scrutinee);
+        visitor.visit_expr(scrutinee);
 
-            if let Some(case_method) = visitor.case_method {
-                if let Some((bad_case_span, bad_case_sym)) = verify_case(&case_method, arms) {
-                    lint(cx, &case_method, bad_case_span, bad_case_sym.as_str());
-                }
+        if let Some(case_method) = visitor.case_method {
+            if let Some((bad_case_span, bad_case_sym)) = verify_case(&case_method, arms) {
+                lint(cx, &case_method, bad_case_span, bad_case_sym.as_str());
             }
         }
     }
@@ -45,7 +40,7 @@ struct MatchExprVisitor<'a, 'tcx> {
     case_method: Option<CaseMethod>,
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for MatchExprVisitor<'a, 'tcx> {
+impl<'tcx> Visitor<'tcx> for MatchExprVisitor<'_, 'tcx> {
     fn visit_expr(&mut self, ex: &'tcx Expr<'_>) {
         match ex.kind {
             ExprKind::MethodCall(segment, receiver, [], _) if self.case_altered(segment.ident.as_str(), receiver) => {},
@@ -54,7 +49,7 @@ impl<'a, 'tcx> Visitor<'tcx> for MatchExprVisitor<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> MatchExprVisitor<'a, 'tcx> {
+impl MatchExprVisitor<'_, '_> {
     fn case_altered(&mut self, segment_ident: &str, receiver: &Expr<'_>) -> bool {
         if let Some(case_method) = get_case_method(segment_ident) {
             let ty = self.cx.typeck_results().expr_ty(receiver).peel_refs();
@@ -88,17 +83,15 @@ fn verify_case<'a>(case_method: &'a CaseMethod, arms: &'a [Arm<'_>]) -> Option<(
     };
 
     for arm in arms {
-        if_chain! {
-            if let PatKind::Lit(Expr {
-                                kind: ExprKind::Lit(lit),
-                                ..
-                            }) = arm.pat.kind;
-            if let LitKind::Str(symbol, _) = lit.node;
-            let input = symbol.as_str();
-            if !case_check(input);
-            then {
-                return Some((lit.span, symbol));
-            }
+        if let PatKind::Lit(Expr {
+            kind: ExprKind::Lit(lit),
+            ..
+        }) = arm.pat.kind
+            && let LitKind::Str(symbol, _) = lit.node
+            && let input = symbol.as_str()
+            && !case_check(input)
+        {
+            return Some((lit.span, symbol));
         }
     }
 
@@ -118,7 +111,7 @@ fn lint(cx: &LateContext<'_>, case_method: &CaseMethod, bad_case_span: Span, bad
         MATCH_STR_CASE_MISMATCH,
         bad_case_span,
         "this `match` arm has a differing case than its expression",
-        &format!("consider changing the case of this arm to respect `{method_str}`"),
+        format!("consider changing the case of this arm to respect `{method_str}`"),
         format!("\"{suggestion}\""),
         Applicability::MachineApplicable,
     );

@@ -1,5 +1,3 @@
-//@run-rustfix
-
 #![warn(clippy::all)]
 #![warn(clippy::redundant_pattern_matching)]
 #![allow(
@@ -23,6 +21,12 @@ fn main() {
     } else {
         bar();
     }
+
+    // Issue 6459
+    if Ready(42).is_ready() {}
+
+    // Issue 6459
+    if Pending::<()>.is_pending() {}
 
     while Ready(42).is_ready() {}
 

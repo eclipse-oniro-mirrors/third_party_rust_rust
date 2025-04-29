@@ -1,11 +1,9 @@
-//! lint on if branches that could be swapped so no `!` operation is necessary
-//! on the condition
-
+use clippy_utils::consts::{ConstEvalCtxt, Constant};
 use clippy_utils::diagnostics::span_lint_and_help;
 use clippy_utils::is_else_clause;
 use rustc_hir::{BinOpKind, Expr, ExprKind, UnOp};
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_lint_pass;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -16,7 +14,7 @@ declare_clippy_lint! {
     /// Negations reduce the readability of statements.
     ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// # let v: Vec<usize> = vec![];
     /// # fn a() {}
     /// # fn b() {}
@@ -29,7 +27,7 @@ declare_clippy_lint! {
     ///
     /// Could be written:
     ///
-    /// ```rust
+    /// ```no_run
     /// # let v: Vec<usize> = vec![];
     /// # fn a() {}
     /// # fn b() {}
@@ -47,43 +45,41 @@ declare_clippy_lint! {
 
 declare_lint_pass!(IfNotElse => [IF_NOT_ELSE]);
 
-impl LateLintPass<'_> for IfNotElse {
-    fn check_expr(&mut self, cx: &LateContext<'_>, item: &Expr<'_>) {
-        // While loops will be desugared to ExprKind::If. This will cause the lint to fire.
-        // To fix this, return early if this span comes from a macro or desugaring.
-        if item.span.from_expansion() {
-            return;
-        }
-        if let ExprKind::If(cond, _, Some(els)) = item.kind {
-            if let ExprKind::Block(..) = els.kind {
-                // Disable firing the lint in "else if" expressions.
-                if is_else_clause(cx.tcx, item) {
-                    return;
-                }
+fn is_zero_const(expr: &Expr<'_>, cx: &LateContext<'_>) -> bool {
+    if let Some(value) = ConstEvalCtxt::new(cx).eval_simple(expr) {
+        return Constant::Int(0) == value;
+    }
+    false
+}
 
-                match cond.peel_drop_temps().kind {
-                    ExprKind::Unary(UnOp::Not, _) => {
-                        span_lint_and_help(
-                            cx,
-                            IF_NOT_ELSE,
-                            item.span,
-                            "unnecessary boolean `not` operation",
-                            None,
-                            "remove the `!` and swap the blocks of the `if`/`else`",
-                        );
-                    },
-                    ExprKind::Binary(ref kind, _, _) if kind.node == BinOpKind::Ne => {
-                        span_lint_and_help(
-                            cx,
-                            IF_NOT_ELSE,
-                            item.span,
-                            "unnecessary `!=` operation",
-                            None,
-                            "change to `==` and swap the blocks of the `if`/`else`",
-                        );
-                    },
-                    _ => (),
-                }
+impl LateLintPass<'_> for IfNotElse {
+    fn check_expr(&mut self, cx: &LateContext<'_>, e: &Expr<'_>) {
+        if let ExprKind::If(cond, _, Some(els)) = e.kind
+            && let ExprKind::DropTemps(cond) = cond.kind
+            && let ExprKind::Block(..) = els.kind
+        {
+            let (msg, help) = match cond.kind {
+                ExprKind::Unary(UnOp::Not, _) => (
+                    "unnecessary boolean `not` operation",
+                    "remove the `!` and swap the blocks of the `if`/`else`",
+                ),
+                // Don't lint on `… != 0`, as these are likely to be bit tests.
+                // For example, `if foo & 0x0F00 != 0 { … } else { … }` is already in the "proper" order.
+                ExprKind::Binary(op, _, rhs) if op.node == BinOpKind::Ne && !is_zero_const(rhs, cx) => (
+                    "unnecessary `!=` operation",
+                    "change to `==` and swap the blocks of the `if`/`else`",
+                ),
+                _ => return,
+            };
+
+            // `from_expansion` will also catch `while` loops which appear in the HIR as:
+            // ```rust
+            // loop {
+            //     if cond { ... } else { break; }
+            // }
+            // ```
+            if !e.span.from_expansion() && !is_else_clause(cx.tcx, e) {
+                span_lint_and_help(cx, IF_NOT_ELSE, e.span, msg, None, help);
             }
         }
     }

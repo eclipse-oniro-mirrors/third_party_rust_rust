@@ -1,5 +1,5 @@
 //! See [`ManifestPath`].
-use std::{ops, path::Path};
+use std::{borrow::Borrow, fmt, ops};
 
 use paths::{AbsPath, AbsPathBuf};
 
@@ -36,7 +36,17 @@ impl ManifestPath {
     }
 
     pub fn canonicalize(&self) -> ! {
-        (&**self).canonicalize()
+        (**self).canonicalize()
+    }
+
+    pub fn is_rust_manifest(&self) -> bool {
+        self.file.extension().map_or(false, |ext| ext == "rs")
+    }
+}
+
+impl fmt::Display for ManifestPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.file, f)
     }
 }
 
@@ -48,8 +58,26 @@ impl ops::Deref for ManifestPath {
     }
 }
 
-impl AsRef<Path> for ManifestPath {
-    fn as_ref(&self) -> &Path {
+impl AsRef<AbsPath> for ManifestPath {
+    fn as_ref(&self) -> &AbsPath {
         self.file.as_ref()
+    }
+}
+
+impl AsRef<std::path::Path> for ManifestPath {
+    fn as_ref(&self) -> &std::path::Path {
+        self.file.as_ref()
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for ManifestPath {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.file.as_ref()
+    }
+}
+
+impl Borrow<AbsPath> for ManifestPath {
+    fn borrow(&self) -> &AbsPath {
+        self.file.borrow()
     }
 }

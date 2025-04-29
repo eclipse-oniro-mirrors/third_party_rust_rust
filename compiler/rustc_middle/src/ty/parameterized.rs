@@ -1,4 +1,6 @@
-use rustc_data_structures::fx::FxHashMap;
+use std::hash::Hash;
+
+use rustc_data_structures::unord::UnordMap;
 use rustc_hir::def_id::DefIndex;
 use rustc_index::{Idx, IndexVec};
 
@@ -24,16 +26,16 @@ impl<I: Idx + 'static, T: ParameterizedOverTcx> ParameterizedOverTcx for IndexVe
     type Value<'tcx> = IndexVec<I, T::Value<'tcx>>;
 }
 
-impl<I: 'static, T: ParameterizedOverTcx> ParameterizedOverTcx for FxHashMap<I, T> {
-    type Value<'tcx> = FxHashMap<I, T::Value<'tcx>>;
+impl<I: Hash + Eq + 'static, T: ParameterizedOverTcx> ParameterizedOverTcx for UnordMap<I, T> {
+    type Value<'tcx> = UnordMap<I, T::Value<'tcx>>;
 }
 
 impl<T: ParameterizedOverTcx> ParameterizedOverTcx for ty::Binder<'static, T> {
     type Value<'tcx> = ty::Binder<'tcx, T::Value<'tcx>>;
 }
 
-impl<T: ParameterizedOverTcx> ParameterizedOverTcx for ty::EarlyBinder<T> {
-    type Value<'tcx> = ty::EarlyBinder<T::Value<'tcx>>;
+impl<T: ParameterizedOverTcx> ParameterizedOverTcx for ty::EarlyBinder<'static, T> {
+    type Value<'tcx> = ty::EarlyBinder<'tcx, T::Value<'tcx>>;
 }
 
 #[macro_export]
@@ -52,15 +54,18 @@ trivially_parameterized_over_tcx! {
     usize,
     (),
     u32,
+    u64,
     bool,
     std::string::String,
     crate::metadata::ModChild,
     crate::middle::codegen_fn_attrs::CodegenFnAttrs,
     crate::middle::debugger_visualizer::DebuggerVisualizerFile,
     crate::middle::exported_symbols::SymbolExportInfo,
+    crate::middle::lib_features::FeatureStability,
     crate::middle::resolve_bound_vars::ObjectLifetimeDefault,
     crate::mir::ConstQualifs,
     ty::AssocItemContainer,
+    ty::Asyncness,
     ty::DeducedParamAttrs,
     ty::Generics,
     ty::ImplPolarity,
@@ -71,6 +76,7 @@ trivially_parameterized_over_tcx! {
     ty::Visibility<DefIndex>,
     ty::adjustment::CoerceUnsizedInfo,
     ty::fast_reject::SimplifiedType,
+    ty::IntrinsicDef,
     rustc_ast::Attribute,
     rustc_ast::DelimArgs,
     rustc_ast::expand::StrippedCfgItem<rustc_hir::def_id::DefIndex>,
@@ -80,7 +86,7 @@ trivially_parameterized_over_tcx! {
     rustc_attr::Stability,
     rustc_hir::Constness,
     rustc_hir::Defaultness,
-    rustc_hir::GeneratorKind,
+    rustc_hir::CoroutineKind,
     rustc_hir::IsAsync,
     rustc_hir::LangItem,
     rustc_hir::def::DefKind,
@@ -121,7 +127,8 @@ macro_rules! parameterized_over_tcx {
 parameterized_over_tcx! {
     crate::middle::exported_symbols::ExportedSymbol,
     crate::mir::Body,
-    crate::mir::GeneratorLayout,
+    crate::mir::CoroutineLayout,
+    crate::mir::interpret::ConstAllocation,
     ty::Ty,
     ty::FnSig,
     ty::GenericPredicates,
@@ -130,5 +137,5 @@ parameterized_over_tcx! {
     ty::Predicate,
     ty::Clause,
     ty::ClauseKind,
-    ty::GeneratorDiagnosticData,
+    ty::ImplTraitHeader
 }

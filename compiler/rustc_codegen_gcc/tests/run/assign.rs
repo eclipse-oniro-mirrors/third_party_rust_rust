@@ -5,8 +5,8 @@
 //     7 8
 //     10
 
-#![allow(unused_attributes)]
-#![feature(auto_traits, lang_items, no_core, start, intrinsics, track_caller)]
+#![allow(internal_features, unused_attributes)]
+#![feature(auto_traits, lang_items, no_core, start, intrinsics, rustc_attrs, track_caller)]
 
 #![no_std]
 #![no_core]
@@ -118,6 +118,12 @@ impl Add for isize {
     fn add(self, rhs: Self) -> Self {
         self + rhs
     }
+}
+
+#[track_caller]
+#[lang = "panic_const_add_overflow"]
+pub fn panic_const_add_overflow() -> ! {
+    panic("attempt to add with overflow");
 }
 
 /*

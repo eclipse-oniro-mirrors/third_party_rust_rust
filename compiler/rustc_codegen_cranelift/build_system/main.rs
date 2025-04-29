@@ -2,11 +2,10 @@
 #![warn(unused_lifetimes)]
 #![warn(unreachable_pub)]
 
-use std::env;
 use std::path::PathBuf;
-use std::process;
+use std::{env, process};
 
-use self::utils::{is_ci, is_ci_opt, Compiler};
+use self::utils::Compiler;
 
 mod abi_cafe;
 mod bench;
@@ -16,6 +15,7 @@ mod config;
 mod path;
 mod prepare;
 mod rustc_info;
+mod shared_utils;
 mod tests;
 mod utils;
 
@@ -54,19 +54,14 @@ enum CodegenBackend {
 }
 
 fn main() {
-    if env::var("RUST_BACKTRACE").is_err() {
+    if env::var_os("RUST_BACKTRACE").is_none() {
         env::set_var("RUST_BACKTRACE", "1");
     }
     env::set_var("CG_CLIF_DISABLE_INCR_CACHE", "1");
 
-    if is_ci() {
-        // Disabling incr comp reduces cache size and incr comp doesn't save as much on CI anyway
-        env::set_var("CARGO_BUILD_INCREMENTAL", "false");
-
-        if !is_ci_opt() {
-            // Enable the Cranelift verifier
-            env::set_var("CG_CLIF_ENABLE_VERIFIER", "1");
-        }
+    // Force incr comp even in release mode unless in CI or incremental builds are explicitly disabled
+    if env::var_os("CARGO_BUILD_INCREMENTAL").is_none() {
+        env::set_var("CARGO_BUILD_INCREMENTAL", "true");
     }
 
     let mut args = env::args().skip(1);
@@ -86,7 +81,6 @@ fn main() {
 
     let mut out_dir = PathBuf::from(".");
     let mut download_dir = None;
-    let mut channel = "release";
     let mut sysroot_kind = SysrootKind::Clif;
     let mut use_unstable_features = true;
     let mut frozen = false;
@@ -104,7 +98,6 @@ fn main() {
                     arg_error!("--download-dir requires argument");
                 })));
             }
-            "--debug" => channel = "debug",
             "--sysroot" => {
                 sysroot_kind = match args.next().as_deref() {
                     Some("none") => SysrootKind::None,
@@ -151,9 +144,11 @@ fn main() {
 
     let rustup_toolchain_name = match (env::var("CARGO"), env::var("RUSTC"), env::var("RUSTDOC")) {
         (Ok(_), Ok(_), Ok(_)) => None,
-        (Err(_), Err(_), Err(_)) => Some(rustc_info::get_toolchain_name()),
-        _ => {
-            eprintln!("All of CARGO, RUSTC and RUSTDOC need to be set or none must be set");
+        (_, Err(_), Err(_)) => Some(rustc_info::get_toolchain_name()),
+        vars => {
+            eprintln!(
+                "If RUSTC or RUSTDOC is set, both need to be set and in addition CARGO needs to be set: {vars:?}"
+            );
             process::exit(1);
         }
     };
@@ -169,8 +164,8 @@ fn main() {
             cargo,
             rustc,
             rustdoc,
-            rustflags: String::new(),
-            rustdocflags: String::new(),
+            rustflags: vec![],
+            rustdocflags: vec![],
             triple,
             runner: vec![],
         }
@@ -209,7 +204,6 @@ fn main() {
     } else {
         CodegenBackend::Local(build_backend::build_backend(
             &dirs,
-            channel,
             &bootstrap_host_compiler,
             use_unstable_features,
         ))
@@ -221,7 +215,6 @@ fn main() {
         Command::Test => {
             tests::run_tests(
                 &dirs,
-                channel,
                 sysroot_kind,
                 use_unstable_features,
                 &skip_tests.iter().map(|test| &**test).collect::<Vec<_>>(),
@@ -237,7 +230,6 @@ fn main() {
                 process::exit(1);
             }
             abi_cafe::run(
-                channel,
                 sysroot_kind,
                 &dirs,
                 &cg_clif_dylib,
@@ -248,7 +240,6 @@ fn main() {
         Command::Build => {
             build_sysroot::build_sysroot(
                 &dirs,
-                channel,
                 sysroot_kind,
                 &cg_clif_dylib,
                 &bootstrap_host_compiler,
@@ -259,7 +250,6 @@ fn main() {
         Command::Bench => {
             build_sysroot::build_sysroot(
                 &dirs,
-                channel,
                 sysroot_kind,
                 &cg_clif_dylib,
                 &bootstrap_host_compiler,

@@ -1,8 +1,7 @@
-//@run-rustfix
-//@aux-build:proc_macros.rs:proc-macro
+//@aux-build:proc_macros.rs
 #![warn(clippy::all)]
 #![allow(unused)]
-#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::uninlined_format_args, clippy::single_match)]
 
 #[macro_use]
 extern crate proc_macros;

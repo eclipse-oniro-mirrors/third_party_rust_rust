@@ -1,4 +1,5 @@
-use crate::{fmt, iter::FusedIterator};
+use crate::fmt;
+use crate::iter::FusedIterator;
 
 /// Creates a new iterator where each successive item is computed based on the preceding one.
 ///
@@ -17,7 +18,7 @@ where
     F: FnMut(&T) -> Option<T>,
 {
     // If this function returned `impl Iterator<Item=T>`
-    // it could be based on `unfold` and not need a dedicated type.
+    // it could be based on `from_fn` and not need a dedicated type.
     // However having a named `Successors<T, F>` type allows it to be `Clone` when `T` and `F` are.
     Successors { next: first, succ }
 }

@@ -1,7 +1,4 @@
-// edition:2018
-// revisions: no_drop_tracking drop_tracking drop_tracking_mir
-// [drop_tracking] compile-flags: -Zdrop-tracking
-// [drop_tracking_mir] compile-flags: -Zdrop-tracking-mir
+//@ edition:2018
 // #70935: Check if we do not emit snippet
 // with newlines which lead complex diagnostics.
 
@@ -16,8 +13,8 @@ async fn baz<T>(_c: impl FnMut() -> T) where T: Future<Output=()> {
 }
 
 fn foo(x: NotSync) -> impl Future + Send {
-    //[no_drop_tracking]~^ ERROR future cannot be sent between threads safely
-    //[drop_tracking,drop_tracking_mir]~^^ ERROR `*mut ()` cannot be shared between threads
+    //~^ ERROR `*mut ()` cannot be shared between threads safely
+    //~| ERROR `*mut ()` cannot be shared between threads safely
     async move {
         baz(|| async {
             foo(x.clone());

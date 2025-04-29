@@ -1,9 +1,10 @@
 #![stable(feature = "core_hint", since = "1.27.0")]
 
 //! Hints to compiler that affects how code should be emitted or optimized.
+//!
 //! Hints may be compile time or runtime.
 
-use crate::intrinsics;
+use crate::{intrinsics, ub_checks};
 
 /// Informs the compiler that the site which is calling this function is not
 /// reachable, possibly enabling further optimizations.
@@ -98,11 +99,113 @@ use crate::intrinsics;
 #[rustc_const_stable(feature = "const_unreachable_unchecked", since = "1.57.0")]
 #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
 pub const unsafe fn unreachable_unchecked() -> ! {
+    ub_checks::assert_unsafe_precondition!(
+        check_language_ub,
+        "hint::unreachable_unchecked must never be reached",
+        () => false
+    );
     // SAFETY: the safety contract for `intrinsics::unreachable` must
     // be upheld by the caller.
+    unsafe { intrinsics::unreachable() }
+}
+
+/// Makes a *soundness* promise to the compiler that `cond` holds.
+///
+/// This may allow the optimizer to simplify things, but it might also make the generated code
+/// slower. Either way, calling it will most likely make compilation take longer.
+///
+/// You may know this from other places as
+/// [`llvm.assume`](https://llvm.org/docs/LangRef.html#llvm-assume-intrinsic) or, in C,
+/// [`__builtin_assume`](https://clang.llvm.org/docs/LanguageExtensions.html#builtin-assume).
+///
+/// This promotes a correctness requirement to a soundness requirement. Don't do that without
+/// very good reason.
+///
+/// # Usage
+///
+/// This is a situational tool for micro-optimization, and is allowed to do nothing. Any use
+/// should come with a repeatable benchmark to show the value, with the expectation to drop it
+/// later should the optimizer get smarter and no longer need it.
+///
+/// The more complicated the condition, the less likely this is to be useful. For example,
+/// `assert_unchecked(foo.is_sorted())` is a complex enough value that the compiler is unlikely
+/// to be able to take advantage of it.
+///
+/// There's also no need to `assert_unchecked` basic properties of things.  For example, the
+/// compiler already knows the range of `count_ones`, so there is no benefit to
+/// `let n = u32::count_ones(x); assert_unchecked(n <= u32::BITS);`.
+///
+/// `assert_unchecked` is logically equivalent to `if !cond { unreachable_unchecked(); }`. If
+/// ever you are tempted to write `assert_unchecked(false)`, you should instead use
+/// [`unreachable_unchecked()`] directly.
+///
+/// # Safety
+///
+/// `cond` must be `true`. It is immediate UB to call this with `false`.
+///
+/// # Example
+///
+/// ```
+/// use core::hint;
+///
+/// /// # Safety
+/// ///
+/// /// `p` must be nonnull and valid
+/// pub unsafe fn next_value(p: *const i32) -> i32 {
+///     // SAFETY: caller invariants guarantee that `p` is not null
+///     unsafe { hint::assert_unchecked(!p.is_null()) }
+///
+///     if p.is_null() {
+///         return -1;
+///     } else {
+///         // SAFETY: caller invariants guarantee that `p` is valid
+///         unsafe { *p + 1 }
+///     }
+/// }
+/// ```
+///
+/// Without the `assert_unchecked`, the above function produces the following with optimizations
+/// enabled:
+///
+/// ```asm
+/// next_value:
+///         test    rdi, rdi
+///         je      .LBB0_1
+///         mov     eax, dword ptr [rdi]
+///         inc     eax
+///         ret
+/// .LBB0_1:
+///         mov     eax, -1
+///         ret
+/// ```
+///
+/// Adding the assertion allows the optimizer to remove the extra check:
+///
+/// ```asm
+/// next_value:
+///         mov     eax, dword ptr [rdi]
+///         inc     eax
+///         ret
+/// ```
+///
+/// This example is quite unlike anything that would be used in the real world: it is redundant
+/// to put an assertion right next to code that checks the same thing, and dereferencing a
+/// pointer already has the builtin assumption that it is nonnull. However, it illustrates the
+/// kind of changes the optimizer can make even when the behavior is less obviously related.
+#[track_caller]
+#[inline(always)]
+#[doc(alias = "assume")]
+#[stable(feature = "hint_assert_unchecked", since = "1.81.0")]
+#[rustc_const_stable(feature = "hint_assert_unchecked", since = "1.81.0")]
+pub const unsafe fn assert_unchecked(cond: bool) {
+    // SAFETY: The caller promised `cond` is true.
     unsafe {
-        intrinsics::assert_unsafe_precondition!("hint::unreachable_unchecked must never be reached", () => false);
-        intrinsics::unreachable()
+        ub_checks::assert_unsafe_precondition!(
+            check_language_ub,
+            "hint::assert_unchecked must never be called when the condition is false",
+            (cond: bool = cond) => cond,
+        );
+        crate::intrinsics::assume(cond);
     }
 }
 
@@ -175,34 +278,27 @@ pub fn spin_loop() {
         unsafe { crate::arch::x86_64::_mm_pause() };
     }
 
-    // RISC-V platform spin loop hint implementation
+    #[cfg(target_arch = "riscv32")]
     {
-        // RISC-V RV32 and RV64 share the same PAUSE instruction, but they are located in different
-        // modules in `core::arch`.
-        // In this case, here we call `pause` function in each core arch module.
-        #[cfg(target_arch = "riscv32")]
-        {
-            crate::arch::riscv32::pause();
-        }
-        #[cfg(target_arch = "riscv64")]
-        {
-            crate::arch::riscv64::pause();
-        }
+        crate::arch::riscv32::pause();
     }
 
-    #[cfg(any(target_arch = "aarch64", all(target_arch = "arm", target_feature = "v6")))]
+    #[cfg(target_arch = "riscv64")]
     {
-        #[cfg(target_arch = "aarch64")]
-        {
-            // SAFETY: the `cfg` attr ensures that we only execute this on aarch64 targets.
-            unsafe { crate::arch::aarch64::__isb(crate::arch::aarch64::SY) };
-        }
-        #[cfg(target_arch = "arm")]
-        {
-            // SAFETY: the `cfg` attr ensures that we only execute this on arm targets
-            // with support for the v6 feature.
-            unsafe { crate::arch::arm::__yield() };
-        }
+        crate::arch::riscv64::pause();
+    }
+
+    #[cfg(any(target_arch = "aarch64", target_arch = "arm64ec"))]
+    {
+        // SAFETY: the `cfg` attr ensures that we only execute this on aarch64 targets.
+        unsafe { crate::arch::aarch64::__isb(crate::arch::aarch64::SY) };
+    }
+
+    #[cfg(all(target_arch = "arm", target_feature = "v6"))]
+    {
+        // SAFETY: the `cfg` attr ensures that we only execute this on arm targets
+        // with support for the v6 feature.
+        unsafe { crate::arch::arm::__yield() };
     }
 }
 
@@ -218,7 +314,7 @@ pub fn spin_loop() {
 /// extent to which it can block optimisations may vary depending upon the platform and code-gen
 /// backend used. Programs cannot rely on `black_box` for *correctness*, beyond it behaving as the
 /// identity function. As such, it **must not be relied upon to control critical program behavior.**
-/// This _immediately_ precludes any direct use of this function for cryptographic or security
+/// This also means that this function does not offer any guarantees for cryptographic or security
 /// purposes.
 ///
 /// [`std::convert::identity`]: crate::convert::identity
@@ -246,7 +342,7 @@ pub fn spin_loop() {
 ///
 /// The compiler could theoretically make optimizations like the following:
 ///
-/// - `needle` and `haystack` are always the same, move the call to `contains` outside the loop and
+/// - The `needle` and `haystack` do not change, move the call to `contains` outside the loop and
 ///   delete the loop
 /// - Inline `contains`
 /// - `needle` and `haystack` have values known at compile time, `contains` is always true. Remove
@@ -284,7 +380,7 @@ pub fn spin_loop() {
 /// - Treats the call to `contains` and its result as volatile: the body of `benchmark` cannot
 ///   optimize this away
 ///
-/// This makes our benchmark much more realistic to how the function would be used in situ, where
+/// This makes our benchmark much more realistic to how the function would actually be used, where
 /// arguments are usually not known at compile time and the result is used in some way.
 #[inline]
 #[stable(feature = "bench_black_box", since = "1.66.0")]

@@ -1,4 +1,4 @@
-//@ignore-target-apple
+//@ignore-target: apple
 
 #![feature(no_core, lang_items, start)]
 #![no_core]
@@ -25,6 +25,7 @@ struct A;
 
 impl A {
     pub fn as_ref(self) -> &'static str {
+        //~^ ERROR: methods called `as_*` usually take `self` by reference or `self` by mutabl
         "A"
     }
 }

@@ -8,6 +8,7 @@ use limit::Limit;
 use crate::{
     event::Event,
     input::Input,
+    Edition,
     SyntaxKind::{self, EOF, ERROR, TOMBSTONE},
     TokenSet, T,
 };
@@ -26,13 +27,14 @@ pub(crate) struct Parser<'t> {
     pos: usize,
     events: Vec<Event>,
     steps: Cell<u32>,
+    edition: Edition,
 }
 
 static PARSER_STEP_LIMIT: Limit = Limit::new(15_000_000);
 
 impl<'t> Parser<'t> {
-    pub(super) fn new(inp: &'t Input) -> Parser<'t> {
-        Parser { inp, pos: 0, events: Vec::new(), steps: Cell::new(0) }
+    pub(super) fn new(inp: &'t Input, edition: Edition) -> Parser<'t> {
+        Parser { inp, pos: 0, events: Vec::new(), steps: Cell::new(0), edition }
     }
 
     pub(crate) fn finish(self) -> Vec<Event> {
@@ -126,6 +128,14 @@ impl<'t> Parser<'t> {
             _ => 1,
         };
         self.do_bump(kind, n_raw_tokens);
+        true
+    }
+
+    pub(crate) fn eat_contextual_kw(&mut self, kind: SyntaxKind) -> bool {
+        if !self.at_contextual_kw(kind) {
+            return false;
+        }
+        self.bump_remap(kind);
         true
     }
 
@@ -250,12 +260,9 @@ impl<'t> Parser<'t> {
 
     /// Create an error node and consume the next token.
     pub(crate) fn err_recover(&mut self, message: &str, recovery: TokenSet) {
-        match self.current() {
-            T!['{'] | T!['}'] => {
-                self.error(message);
-                return;
-            }
-            _ => (),
+        if matches!(self.current(), T!['{'] | T!['}']) {
+            self.error(message);
+            return;
         }
 
         if self.at_ts(recovery) {
@@ -277,6 +284,10 @@ impl<'t> Parser<'t> {
 
     fn push_event(&mut self, event: Event) {
         self.events.push(event);
+    }
+
+    pub(crate) fn edition(&self) -> Edition {
+        self.edition
     }
 }
 

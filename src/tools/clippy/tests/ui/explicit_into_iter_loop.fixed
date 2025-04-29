@@ -1,4 +1,4 @@
-//@run-rustfix
+#![allow(non_local_definitions)]
 #![warn(clippy::explicit_into_iter_loop)]
 
 fn main() {

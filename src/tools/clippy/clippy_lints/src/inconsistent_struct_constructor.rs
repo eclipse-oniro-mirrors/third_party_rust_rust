@@ -1,11 +1,11 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
+use clippy_utils::fulfill_or_allowed;
 use clippy_utils::source::snippet;
-use if_chain::if_chain;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::Applicability;
 use rustc_hir::{self as hir, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_lint_pass;
 use rustc_span::symbol::Symbol;
 use std::fmt::{self, Write as _};
 
@@ -19,7 +19,7 @@ declare_clippy_lint! {
     /// Since the order of fields in a constructor doesn't affect the
     /// resulted instance as the below example indicates,
     ///
-    /// ```rust
+    /// ```no_run
     /// #[derive(Debug, PartialEq, Eq)]
     /// struct Foo {
     ///     x: i32,
@@ -35,7 +35,7 @@ declare_clippy_lint! {
     /// inconsistent order can be confusing and decreases readability and consistency.
     ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// struct Foo {
     ///     x: i32,
     ///     y: i32,
@@ -47,7 +47,7 @@ declare_clippy_lint! {
     /// ```
     ///
     /// Use instead:
-    /// ```rust
+    /// ```no_run
     /// # struct Foo {
     /// #     x: i32,
     /// #     y: i32,
@@ -66,44 +66,47 @@ declare_lint_pass!(InconsistentStructConstructor => [INCONSISTENT_STRUCT_CONSTRU
 
 impl<'tcx> LateLintPass<'tcx> for InconsistentStructConstructor {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx hir::Expr<'_>) {
-        if_chain! {
-            if !expr.span.from_expansion();
-            if let ExprKind::Struct(qpath, fields, base) = expr.kind;
-            let ty = cx.typeck_results().expr_ty(expr);
-            if let Some(adt_def) = ty.ty_adt_def();
-            if adt_def.is_struct();
-            if let Some(variant) = adt_def.variants().iter().next();
-            if fields.iter().all(|f| f.is_shorthand);
-            then {
-                let mut def_order_map = FxHashMap::default();
-                for (idx, field) in variant.fields.iter().enumerate() {
-                    def_order_map.insert(field.name, idx);
-                }
+        if let ExprKind::Struct(qpath, fields, base) = expr.kind
+            && fields.iter().all(|f| f.is_shorthand)
+            && !expr.span.from_expansion()
+            && let ty = cx.typeck_results().expr_ty(expr)
+            && let Some(adt_def) = ty.ty_adt_def()
+            && adt_def.is_struct()
+            && let Some(local_def_id) = adt_def.did().as_local()
+            && let ty_hir_id = cx.tcx.local_def_id_to_hir_id(local_def_id)
+            && let Some(variant) = adt_def.variants().iter().next()
+        {
+            let mut def_order_map = FxHashMap::default();
+            for (idx, field) in variant.fields.iter().enumerate() {
+                def_order_map.insert(field.name, idx);
+            }
 
-                if is_consistent_order(fields, &def_order_map) {
-                    return;
-                }
+            if is_consistent_order(fields, &def_order_map) {
+                return;
+            }
 
-                let mut ordered_fields: Vec<_> = fields.iter().map(|f| f.ident.name).collect();
-                ordered_fields.sort_unstable_by_key(|id| def_order_map[id]);
+            let mut ordered_fields: Vec<_> = fields.iter().map(|f| f.ident.name).collect();
+            ordered_fields.sort_unstable_by_key(|id| def_order_map[id]);
 
-                let mut fields_snippet = String::new();
-                let (last_ident, idents) = ordered_fields.split_last().unwrap();
-                for ident in idents {
-                    let _: fmt::Result = write!(fields_snippet, "{ident}, ");
-                }
-                fields_snippet.push_str(&last_ident.to_string());
+            let mut fields_snippet = String::new();
+            let (last_ident, idents) = ordered_fields.split_last().unwrap();
+            for ident in idents {
+                let _: fmt::Result = write!(fields_snippet, "{ident}, ");
+            }
+            fields_snippet.push_str(&last_ident.to_string());
 
-                let base_snippet = if let Some(base) = base {
-                        format!(", ..{}", snippet(cx, base.span, ".."))
-                    } else {
-                        String::new()
-                    };
+            let base_snippet = if let Some(base) = base {
+                format!(", ..{}", snippet(cx, base.span, ".."))
+            } else {
+                String::new()
+            };
 
-                let sugg = format!("{} {{ {fields_snippet}{base_snippet} }}",
-                    snippet(cx, qpath.span(), ".."),
-                    );
+            let sugg = format!(
+                "{} {{ {fields_snippet}{base_snippet} }}",
+                snippet(cx, qpath.span(), ".."),
+            );
 
+            if !fulfill_or_allowed(cx, INCONSISTENT_STRUCT_CONSTRUCTOR, Some(ty_hir_id)) {
                 span_lint_and_sugg(
                     cx,
                     INCONSISTENT_STRUCT_CONSTRUCTOR,
@@ -112,7 +115,7 @@ impl<'tcx> LateLintPass<'tcx> for InconsistentStructConstructor {
                     "try",
                     sugg,
                     Applicability::MachineApplicable,
-                )
+                );
             }
         }
     }

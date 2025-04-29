@@ -1,6 +1,7 @@
 #![deny(rustdoc::unescaped_backticks)]
 #![allow(rustdoc::broken_intra_doc_links)]
 #![allow(rustdoc::invalid_html_tags)]
+#![allow(rustdoc::redundant_explicit_links)]
 
 ///
 pub fn empty() {}
@@ -189,7 +190,7 @@ pub fn complicated_markdown() {}
 pub mod mir {}
 
 pub mod rustc {
-    /// Constructs a `TyKind::Error` type and registers a `delay_span_bug` with the given `msg to
+    /// Constructs a `TyKind::Error` type and registers a `span_delayed_bug` with the given `msg to
     //~^ ERROR unescaped backtick
     /// ensure it gets used.
     pub fn ty_error_with_message() {}

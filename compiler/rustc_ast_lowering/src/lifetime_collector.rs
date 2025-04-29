@@ -1,36 +1,63 @@
-use super::ResolverAstLoweringExt;
 use rustc_ast::visit::{self, BoundKind, LifetimeCtxt, Visitor};
-use rustc_ast::{FnRetTy, GenericBounds, Lifetime, NodeId, PathSegment, PolyTraitRef, Ty, TyKind};
-use rustc_hir::def::LifetimeRes;
+use rustc_ast::{
+    GenericBound, GenericBounds, Lifetime, NodeId, PathSegment, PolyTraitRef, Ty, TyKind,
+};
+use rustc_data_structures::fx::FxIndexSet;
+use rustc_hir::def::{DefKind, LifetimeRes, Res};
 use rustc_middle::span_bug;
 use rustc_middle::ty::ResolverAstLowering;
-use rustc_span::symbol::{kw, Ident};
 use rustc_span::Span;
+use rustc_span::symbol::{Ident, kw};
+
+use super::ResolverAstLoweringExt;
 
 struct LifetimeCollectVisitor<'ast> {
-    resolver: &'ast ResolverAstLowering,
+    resolver: &'ast mut ResolverAstLowering,
+    always_capture_in_scope: bool,
     current_binders: Vec<NodeId>,
-    collected_lifetimes: Vec<Lifetime>,
+    collected_lifetimes: FxIndexSet<Lifetime>,
 }
 
 impl<'ast> LifetimeCollectVisitor<'ast> {
-    fn new(resolver: &'ast ResolverAstLowering) -> Self {
-        Self { resolver, current_binders: Vec::new(), collected_lifetimes: Vec::new() }
+    fn new(resolver: &'ast mut ResolverAstLowering, always_capture_in_scope: bool) -> Self {
+        Self {
+            resolver,
+            always_capture_in_scope,
+            current_binders: Vec::new(),
+            collected_lifetimes: FxIndexSet::default(),
+        }
+    }
+
+    fn visit_opaque(&mut self, opaque_ty_node_id: NodeId, bounds: &'ast GenericBounds, span: Span) {
+        // If we're edition 2024 or within a TAIT or RPITIT, *and* there is no
+        // `use<>` statement to override the default capture behavior, then
+        // capture all of the in-scope lifetimes.
+        if (self.always_capture_in_scope || span.at_least_rust_2024())
+            && bounds.iter().all(|bound| !matches!(bound, GenericBound::Use(..)))
+        {
+            for (ident, id, _) in self.resolver.extra_lifetime_params(opaque_ty_node_id) {
+                self.record_lifetime_use(Lifetime { id, ident });
+            }
+        }
+
+        // We also recurse on the bounds to make sure we capture all the lifetimes
+        // mentioned in the bounds. These may disagree with the `use<>` list, in which
+        // case we will error on these later. We will also recurse to visit any
+        // nested opaques, which may *implicitly* capture lifetimes.
+        for bound in bounds {
+            self.visit_param_bound(bound, BoundKind::Bound);
+        }
     }
 
     fn record_lifetime_use(&mut self, lifetime: Lifetime) {
         match self.resolver.get_lifetime_res(lifetime.id).unwrap_or(LifetimeRes::Error) {
             LifetimeRes::Param { binder, .. } | LifetimeRes::Fresh { binder, .. } => {
                 if !self.current_binders.contains(&binder) {
-                    if !self.collected_lifetimes.contains(&lifetime) {
-                        self.collected_lifetimes.push(lifetime);
-                    }
+                    self.collected_lifetimes.insert(lifetime);
                 }
             }
-            LifetimeRes::Static | LifetimeRes::Error => {
-                if !self.collected_lifetimes.contains(&lifetime) {
-                    self.collected_lifetimes.push(lifetime);
-                }
+            LifetimeRes::Static { .. } | LifetimeRes::Error => {
+                self.collected_lifetimes.insert(lifetime);
             }
             LifetimeRes::Infer => {}
             res => {
@@ -77,15 +104,32 @@ impl<'ast> Visitor<'ast> for LifetimeCollectVisitor<'ast> {
     }
 
     fn visit_ty(&mut self, t: &'ast Ty) {
-        match t.kind {
+        match &t.kind {
+            TyKind::Path(None, _) => {
+                // We can sometimes encounter bare trait objects
+                // which are represented in AST as paths.
+                if let Some(partial_res) = self.resolver.get_partial_res(t.id)
+                    && let Some(Res::Def(DefKind::Trait | DefKind::TraitAlias, _)) =
+                        partial_res.full_res()
+                {
+                    self.current_binders.push(t.id);
+                    visit::walk_ty(self, t);
+                    self.current_binders.pop();
+                } else {
+                    visit::walk_ty(self, t);
+                }
+            }
             TyKind::BareFn(_) => {
                 self.current_binders.push(t.id);
                 visit::walk_ty(self, t);
                 self.current_binders.pop();
             }
-            TyKind::Ref(None, _) => {
+            TyKind::Ref(None, _) | TyKind::PinnedRef(None, _) => {
                 self.record_elided_anchor(t.id, t.span);
                 visit::walk_ty(self, t);
+            }
+            TyKind::ImplTrait(opaque_ty_node_id, bounds) => {
+                self.visit_opaque(*opaque_ty_node_id, bounds, t.span)
             }
             _ => {
                 visit::walk_ty(self, t);
@@ -94,19 +138,14 @@ impl<'ast> Visitor<'ast> for LifetimeCollectVisitor<'ast> {
     }
 }
 
-pub fn lifetimes_in_ret_ty(resolver: &ResolverAstLowering, ret_ty: &FnRetTy) -> Vec<Lifetime> {
-    let mut visitor = LifetimeCollectVisitor::new(resolver);
-    visitor.visit_fn_ret_ty(ret_ty);
-    visitor.collected_lifetimes
-}
-
-pub fn lifetimes_in_bounds(
-    resolver: &ResolverAstLowering,
+pub(crate) fn lifetimes_for_opaque(
+    resolver: &mut ResolverAstLowering,
+    always_capture_in_scope: bool,
+    opaque_ty_node_id: NodeId,
     bounds: &GenericBounds,
-) -> Vec<Lifetime> {
-    let mut visitor = LifetimeCollectVisitor::new(resolver);
-    for bound in bounds {
-        visitor.visit_param_bound(bound, BoundKind::Bound);
-    }
+    span: Span,
+) -> FxIndexSet<Lifetime> {
+    let mut visitor = LifetimeCollectVisitor::new(resolver, always_capture_in_scope);
+    visitor.visit_opaque(opaque_ty_node_id, bounds, span);
     visitor.collected_lifetimes
 }

@@ -1,9 +1,9 @@
-// edition:2018
+//@ edition:2018
 
 // Exercise the unused_mut attribute in some positive and negative cases
 
 #![warn(unused_mut)]
-#![feature(async_closure, raw_ref_op)]
+#![feature(async_closure)]
 
 async fn baz_async(
     mut a: i32,

@@ -6,10 +6,10 @@
 use either::Either;
 use hir::{
     Adjust, Adjustment, AutoBorrow, HirDisplay, Mutability, OverloadedDeref, PointerCast, Safety,
-    Semantics,
 };
-use ide_db::RootDatabase;
+use ide_db::famous_defs::FamousDefs;
 
+use span::EditionedFileId;
 use stdx::never;
 use syntax::{
     ast::{self, make, AstNode},
@@ -23,8 +23,9 @@ use crate::{
 
 pub(super) fn hints(
     acc: &mut Vec<InlayHint>,
-    sema: &Semantics<'_, RootDatabase>,
+    FamousDefs(sema, _): &FamousDefs<'_, '_>,
     config: &InlayHintsConfig,
+    file_id: EditionedFileId,
     expr: &ast::Expr,
 ) -> Option<()> {
     if config.adjustment_hints_hide_outside_unsafe && !sema.is_inside_unsafe(expr) {
@@ -137,22 +138,24 @@ pub(super) fn hints(
             }
             _ => continue,
         };
+        let label = InlayHintLabel::simple(
+            if postfix { format!(".{}", text.trim_end()) } else { text.to_owned() },
+            Some(InlayTooltip::Markdown(format!(
+                "`{}` → `{}` ({coercion} coercion)",
+                source.display(sema.db, file_id.edition()),
+                target.display(sema.db, file_id.edition()),
+            ))),
+            None,
+        );
         acc.push(InlayHint {
             range: expr.syntax().text_range(),
             pad_left: false,
             pad_right: false,
             position: if postfix { InlayHintPosition::After } else { InlayHintPosition::Before },
             kind: InlayKind::Adjustment,
-            label: InlayHintLabel::simple(
-                if postfix { format!(".{}", text.trim_end()) } else { text.to_owned() },
-                Some(InlayTooltip::Markdown(format!(
-                    "`{}` → `{}` ({coercion} coercion)",
-                    source.display(sema.db),
-                    target.display(sema.db),
-                ))),
-                None,
-            ),
+            label,
             text_edit: None,
+            resolve_parent: Some(expr.syntax().text_range()),
         });
     }
     if !postfix && needs_inner_parens {
@@ -259,7 +262,7 @@ fn needs_parens_for_adjustment_hints(expr: &ast::Expr, postfix: bool) -> (bool, 
         }
     })() else {
         never!("broken syntax tree?\n{:?}\n{:?}", expr, dummy_expr);
-        return (true, true)
+        return (true, true);
     };
 
     // At this point
@@ -285,7 +288,7 @@ mod tests {
         check_with_config(
             InlayHintsConfig { adjustment_hints: AdjustmentHints::Always, ..DISABLED_CONFIG },
             r#"
-//- minicore: coerce_unsized, fn, eq, index
+//- minicore: coerce_unsized, fn, eq, index, dispatch_from_dyn
 fn main() {
     let _: u32         = loop {};
                        //^^^^^^^<never-to-any>
@@ -310,6 +313,7 @@ fn main() {
                        //^^^^^^^^^^^^<safe-fn-pointer-to-unsafe-fn-pointer>
                        //^^^^^^^^^^^^(
                        //^^^^^^^^^^^^)
+                       //^^^^<fn-item-to-fn-pointer>
     let _: fn()        = || {};
                        //^^^^^<closure-to-fn-pointer>
     let _: unsafe fn() = || {};
@@ -318,6 +322,8 @@ fn main() {
                        //^^^^^^^^^^^^^^^^^^^^^<mut-ptr-to-const-ptr>
                        //^^^^^^^^^^^^^^^^^^^^^(
                        //^^^^^^^^^^^^^^^^^^^^^)
+                       //^^^^^^^^^&raw mut $
+                       //^^^^^^^^^*
     let _: &mut [_]    = &mut [0; 0];
                        //^^^^^^^^^^^<unsize>
                        //^^^^^^^^^^^&mut $
@@ -425,7 +431,7 @@ impl core::ops::IndexMut for Struct {}
                 ..DISABLED_CONFIG
             },
             r#"
-//- minicore: coerce_unsized, fn, eq, index
+//- minicore: coerce_unsized, fn, eq, index, dispatch_from_dyn
 fn main() {
 
     Struct.consume();
@@ -707,5 +713,26 @@ fn main() {
 }
             "#,
         )
+    }
+
+    // regression test for a stackoverflow in hir display code
+    #[test]
+    fn adjustment_hints_method_call_on_impl_trait_self() {
+        check_with_config(
+            InlayHintsConfig { adjustment_hints: AdjustmentHints::Always, ..DISABLED_CONFIG },
+            r#"
+//- minicore: slice, coerce_unsized
+trait T<RHS = Self> {}
+
+fn hello(it: &&[impl T]) {
+    it.len();
+  //^^(
+  //^^&
+  //^^*
+  //^^*
+  //^^)
+}
+"#,
+        );
     }
 }

@@ -2,6 +2,8 @@ use expect_test::{expect, Expect};
 
 use crate::tests::completion_list;
 
+use super::check_edit;
+
 fn check(ra_fixture: &str, expect: Expect) {
     let actual = completion_list(ra_fixture);
     expect.assert_eq(&actual);
@@ -186,12 +188,14 @@ fn main() {
             lc foo                  Foo
             lc thing                i32
             md core
-            st Foo
+            st Foo                  Foo
             st Foo {…}              Foo { foo1: u32, foo2: u32 }
             tt Default
-            bt u32
+            bt u32                  u32
             kw crate::
             kw self::
+            ex Foo::default()
+            ex foo
         "#]],
     );
     check(
@@ -298,4 +302,49 @@ fn foo() {
         "#,
         expect![[r#""#]],
     )
+}
+
+#[test]
+fn add_space_after_vis_kw() {
+    check_edit(
+        "pub(crate)",
+        r"
+pub(crate) struct S {
+    $0
+}
+",
+        r#"
+pub(crate) struct S {
+    pub(crate) $0
+}
+"#,
+    );
+
+    check_edit(
+        "pub",
+        r"
+pub struct S {
+    $0
+}
+",
+        r#"
+pub struct S {
+    pub $0
+}
+"#,
+    );
+
+    check_edit(
+        "pub(super)",
+        r"
+pub(super) struct S {
+    $0
+}
+",
+        r#"
+pub(super) struct S {
+    pub(super) $0
+}
+"#,
+    );
 }

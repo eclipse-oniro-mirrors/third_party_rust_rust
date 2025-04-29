@@ -1,6 +1,6 @@
-//@run-rustfix
-
 #![allow(dead_code)]
+
+//@no-rustfix: need to change the suggestion to a multipart suggestion
 
 use std::collections::HashMap;
 
@@ -321,6 +321,19 @@ mod issue10158 {
                 // Box::<S>::default() adjusts to Box<dyn T>
                 inner: Box::<S>::default(),
             }
+        }
+    }
+}
+
+mod issue11368 {
+    pub struct A {
+        a: u32,
+    }
+
+    impl Default for A {
+        #[track_caller]
+        fn default() -> Self {
+            Self { a: 0 }
         }
     }
 }

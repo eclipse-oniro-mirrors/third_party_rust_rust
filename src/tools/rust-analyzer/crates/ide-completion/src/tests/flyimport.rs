@@ -53,7 +53,7 @@ fn main() {
 use dep::io::stdin;
 
 fn main() {
-    stdin()$0
+    stdin();$0
 }
 "#,
     );
@@ -106,7 +106,7 @@ fn main() {
 }
 "#,
         r#"
-use dep::{FirstStruct, some_module::{SecondStruct, ThirdStruct}};
+use dep::{some_module::{SecondStruct, ThirdStruct}, FirstStruct};
 
 fn main() {
     ThirdStruct
@@ -116,19 +116,47 @@ fn main() {
 }
 
 #[test]
-fn short_paths_are_ignored() {
-    cov_mark::check!(flyimport_exact_on_short_path);
+fn short_paths_are_prefix_matched() {
+    cov_mark::check!(flyimport_prefix_on_short_path);
 
     check(
         r#"
 //- /lib.rs crate:dep
-pub struct Bar;
+pub struct Barc;
 pub struct Rcar;
 pub struct Rc;
+pub const RC: () = ();
 pub mod some_module {
     pub struct Bar;
     pub struct Rcar;
     pub struct Rc;
+    pub const RC: () = ();
+}
+
+//- /main.rs crate:main deps:dep
+fn main() {
+    Rc$0
+}
+"#,
+        expect![[r#"
+            st Rc (use dep::Rc)       Rc
+            st Rcar (use dep::Rcar)   Rcar
+            st Rc (use dep::some_module::Rc) Rc
+            st Rcar (use dep::some_module::Rcar) Rcar
+        "#]],
+    );
+    check(
+        r#"
+//- /lib.rs crate:dep
+pub struct Barc;
+pub struct Rcar;
+pub struct Rc;
+pub const RC: () = ();
+pub mod some_module {
+    pub struct Bar;
+    pub struct Rcar;
+    pub struct Rc;
+    pub const RC: () = ();
 }
 
 //- /main.rs crate:main deps:dep
@@ -137,8 +165,36 @@ fn main() {
 }
 "#,
         expect![[r#"
-            st Rc (use dep::Rc)
-            st Rc (use dep::some_module::Rc)
+            ct RC (use dep::RC)       ()
+            st Rc (use dep::Rc)       Rc
+            st Rcar (use dep::Rcar)   Rcar
+            ct RC (use dep::some_module::RC) ()
+            st Rc (use dep::some_module::Rc) Rc
+            st Rcar (use dep::some_module::Rcar) Rcar
+        "#]],
+    );
+    check(
+        r#"
+//- /lib.rs crate:dep
+pub struct Barc;
+pub struct Rcar;
+pub struct Rc;
+pub const RC: () = ();
+pub mod some_module {
+    pub struct Bar;
+    pub struct Rcar;
+    pub struct Rc;
+    pub const RC: () = ();
+}
+
+//- /main.rs crate:main deps:dep
+fn main() {
+    RC$0
+}
+"#,
+        expect![[r#"
+            ct RC (use dep::RC)       ()
+            ct RC (use dep::some_module::RC) ()
         "#]],
     );
 }
@@ -171,10 +227,10 @@ fn main() {
 }
 "#,
         expect![[r#"
-                st ThirdStruct (use dep::some_module::ThirdStruct)
-                st AfterThirdStruct (use dep::some_module::AfterThirdStruct)
-                st ThiiiiiirdStruct (use dep::some_module::ThiiiiiirdStruct)
-            "#]],
+            st ThirdStruct (use dep::some_module::ThirdStruct) ThirdStruct
+            st AfterThirdStruct (use dep::some_module::AfterThirdStruct) AfterThirdStruct
+            st ThiiiiiirdStruct (use dep::some_module::ThiiiiiirdStruct) ThiiiiiirdStruct
+        "#]],
     );
 }
 
@@ -218,7 +274,7 @@ fn trait_function_fuzzy_completion() {
 use dep::test_mod::TestTrait;
 
 fn main() {
-    dep::test_mod::TestStruct::weird_function()$0
+    dep::test_mod::TestStruct::weird_function();$0
 }
 "#,
     );
@@ -253,7 +309,7 @@ fn trait_const_fuzzy_completion() {
     check(
         fixture,
         expect![[r#"
-            ct SPECIAL_CONST (use dep::test_mod::TestTrait)
+            ct SPECIAL_CONST (use dep::test_mod::TestTrait) u8
         "#]],
     );
 
@@ -312,9 +368,179 @@ use dep::test_mod::TestTrait;
 
 fn main() {
     let test_struct = dep::test_mod::TestStruct {};
-    test_struct.random_method()$0
+    test_struct.random_method();$0
 }
 "#,
+    );
+}
+
+#[test]
+fn trait_method_fuzzy_completion_aware_of_fundamental_boxes() {
+    let fixture = r#"
+//- /fundamental.rs crate:fundamental
+#[lang = "owned_box"]
+#[fundamental]
+pub struct Box<T>(T);
+//- /foo.rs crate:foo
+pub trait TestTrait {
+    fn some_method(&self);
+}
+//- /main.rs crate:main deps:foo,fundamental
+struct TestStruct;
+
+impl foo::TestTrait for fundamental::Box<TestStruct> {
+    fn some_method(&self) {}
+}
+
+fn main() {
+    let t = fundamental::Box(TestStruct);
+    t.$0
+}
+"#;
+
+    check(
+        fixture,
+        expect![[r#"
+        me some_method() (use foo::TestTrait) fn(&self)
+    "#]],
+    );
+
+    check_edit(
+        "some_method",
+        fixture,
+        r#"
+use foo::TestTrait;
+
+struct TestStruct;
+
+impl foo::TestTrait for fundamental::Box<TestStruct> {
+    fn some_method(&self) {}
+}
+
+fn main() {
+    let t = fundamental::Box(TestStruct);
+    t.some_method();$0
+}
+"#,
+    );
+}
+
+#[test]
+fn trait_method_fuzzy_completion_aware_of_fundamental_references() {
+    let fixture = r#"
+//- /foo.rs crate:foo
+pub trait TestTrait {
+    fn some_method(&self);
+}
+//- /main.rs crate:main deps:foo
+struct TestStruct;
+
+impl foo::TestTrait for &TestStruct {
+    fn some_method(&self) {}
+}
+
+fn main() {
+    let t = &TestStruct;
+    t.$0
+}
+"#;
+
+    check(
+        fixture,
+        expect![[r#"
+        me some_method() (use foo::TestTrait) fn(&self)
+    "#]],
+    );
+
+    check_edit(
+        "some_method",
+        fixture,
+        r#"
+use foo::TestTrait;
+
+struct TestStruct;
+
+impl foo::TestTrait for &TestStruct {
+    fn some_method(&self) {}
+}
+
+fn main() {
+    let t = &TestStruct;
+    t.some_method();$0
+}
+"#,
+    );
+}
+
+#[test]
+fn trait_completions_handle_associated_types() {
+    let fixture = r#"
+//- /foo.rs crate:foo
+pub trait NotInScope {
+    fn not_in_scope(&self);
+}
+
+pub trait Wrapper {
+    type Inner: NotInScope;
+    fn inner(&self) -> Self::Inner;
+}
+
+//- /main.rs crate:main deps:foo
+use foo::Wrapper;
+
+fn completion<T: Wrapper>(whatever: T) {
+    whatever.inner().$0
+}
+"#;
+
+    check(
+        fixture,
+        expect![[r#"
+        me not_in_scope() (use foo::NotInScope) fn(&self)
+    "#]],
+    );
+
+    check_edit(
+        "not_in_scope",
+        fixture,
+        r#"
+use foo::{NotInScope, Wrapper};
+
+fn completion<T: Wrapper>(whatever: T) {
+    whatever.inner().not_in_scope();$0
+}
+"#,
+    );
+}
+
+#[test]
+fn trait_method_fuzzy_completion_aware_of_unit_type() {
+    let fixture = r#"
+//- /test_trait.rs crate:test_trait
+pub trait TestInto<T> {
+    fn into(self) -> T;
+}
+
+//- /main.rs crate:main deps:test_trait
+struct A;
+
+impl test_trait::TestInto<A> for () {
+    fn into(self) -> A {
+        A
+    }
+}
+
+fn main() {
+    let a = ();
+    a.$0
+}
+"#;
+
+    check(
+        fixture,
+        expect![[r#"
+    me into() (use test_trait::TestInto) fn(self) -> T
+    "#]],
     );
 }
 
@@ -353,7 +579,7 @@ fn main() {
 use dep::test_mod::TestTrait;
 
 fn main() {
-    dep::test_mod::TestAlias::random_method()$0
+    dep::test_mod::TestAlias::random_method();$0
 }
 "#,
     );
@@ -476,7 +702,7 @@ fn main() {
 use dep::test_mod::TestTrait;
 
 fn main() {
-    dep::test_mod::TestStruct::another_function()$0
+    dep::test_mod::TestStruct::another_function();$0
 }
 "#,
     );
@@ -541,8 +767,9 @@ fn main() {
 }
 "#,
         expect![[r#"
-            ct SPECIAL_CONST (use dep::test_mod::TestTrait) DEPRECATED
+            ct SPECIAL_CONST (use dep::test_mod::TestTrait) u8 DEPRECATED
             fn weird_function() (use dep::test_mod::TestTrait) fn() DEPRECATED
+            me random_method(…) (use dep::test_mod::TestTrait) fn(&self) DEPRECATED
         "#]],
     );
 }
@@ -644,6 +871,38 @@ fn main() {
 }
 
 #[test]
+fn config_prefer_absolute() {
+    let fixture = r#"
+//- /lib.rs crate:dep
+pub mod foo {
+    pub mod bar {
+        pub struct Item;
+    }
+}
+
+//- /main.rs crate:main deps:dep
+use ::dep::foo::bar;
+
+fn main() {
+    Ite$0
+}"#;
+    let mut config = TEST_CONFIG;
+    config.prefer_absolute = true;
+
+    check_edit_with_config(
+        config.clone(),
+        "Item",
+        fixture,
+        r#"
+use ::dep::foo::bar::{self, Item};
+
+fn main() {
+    Item
+}"#,
+    );
+}
+
+#[test]
 fn unresolved_qualifier() {
     let fixture = r#"
 mod foo {
@@ -661,7 +920,7 @@ fn main() {
     check(
         fixture,
         expect![[r#"
-        st Item (use foo::bar::baz::Item)
+            st Item (use foo::bar) Item
         "#]],
     );
 
@@ -669,19 +928,19 @@ fn main() {
         "Item",
         fixture,
         r#"
-        use foo::bar;
+use foo::bar;
 
-        mod foo {
-            pub mod bar {
-                pub mod baz {
-                    pub struct Item;
-                }
-            }
+mod foo {
+    pub mod bar {
+        pub mod baz {
+            pub struct Item;
         }
+    }
+}
 
-        fn main() {
-            bar::baz::Item
-        }"#,
+fn main() {
+    bar::baz::Item
+}"#,
     );
 }
 
@@ -703,7 +962,7 @@ fn main() {
     check(
         fixture,
         expect![[r#"
-        ct TEST_ASSOC (use foo::Item)
+            ct TEST_ASSOC (use foo::Item) usize
         "#]],
     );
 
@@ -747,8 +1006,8 @@ fn main() {
     check(
         fixture,
         expect![[r#"
-        ct TEST_ASSOC (use foo::bar::Item)
-    "#]],
+            ct TEST_ASSOC (use foo::bar) usize
+        "#]],
     );
 
     check_edit(
@@ -841,8 +1100,8 @@ fn main() {
     TES$0
 }"#,
         expect![[r#"
-        ct TEST_CONST (use foo::TEST_CONST)
-    "#]],
+            ct TEST_CONST (use foo::TEST_CONST) usize
+        "#]],
     );
 
     check(
@@ -858,9 +1117,9 @@ fn main() {
     tes$0
 }"#,
         expect![[r#"
-        ct TEST_CONST (use foo::TEST_CONST)
-        fn test_function() (use foo::test_function) fn() -> i32
-    "#]],
+            ct TEST_CONST (use foo::TEST_CONST) usize
+            fn test_function() (use foo::test_function) fn() -> i32
+        "#]],
     );
 
     check(
@@ -873,9 +1132,9 @@ mod foo {
 }
 
 fn main() {
-    Te$0
+    Tes$0
 }"#,
-        expect![[]],
+        expect![""],
     );
 }
 
@@ -1082,8 +1341,8 @@ mod mud {
 }
 "#,
         expect![[r#"
-                st Struct (use crate::Struct)
-            "#]],
+            st Struct (use crate::Struct) Struct
+        "#]],
     );
 }
 
@@ -1194,7 +1453,7 @@ enum Foo {
 }
 }"#,
         expect![[r#"
-            st Barbara (use foo::Barbara)
+            st Barbara (use foo::Barbara) Barbara
         "#]],
     )
 }
@@ -1285,4 +1544,128 @@ macro_rules! println {
 "#,
         expect![""],
     )
+}
+
+#[test]
+fn no_completions_for_external_doc_hidden_in_path() {
+    check(
+        r#"
+//- /main.rs crate:main deps:dep
+fn main() {
+    Span$0
+}
+//- /lib.rs crate:dep
+#[doc(hidden)]
+pub mod bridge {
+    pub mod server {
+        pub trait Span
+    }
+}
+pub mod bridge2 {
+    #[doc(hidden)]
+    pub mod server2 {
+        pub trait Span
+    }
+}
+"#,
+        expect![""],
+    );
+    // unless re-exported
+    check(
+        r#"
+//- /main.rs crate:main deps:dep
+fn main() {
+    Span$0
+}
+//- /lib.rs crate:dep
+#[doc(hidden)]
+pub mod bridge {
+    pub mod server {
+        pub trait Span
+    }
+}
+pub use bridge::server::Span;
+pub mod bridge2 {
+    #[doc(hidden)]
+    pub mod server2 {
+        pub trait Span2
+    }
+}
+pub use bridge2::server2::Span2;
+"#,
+        expect![[r#"
+            tt Span (use dep::Span)
+            tt Span2 (use dep::Span2)
+        "#]],
+    );
+}
+
+#[test]
+fn flyimport_only_traits_in_impl_trait_block() {
+    check(
+        r#"
+//- /main.rs crate:main deps:dep
+pub struct Bar;
+
+impl Foo$0 for Bar { }
+//- /lib.rs crate:dep
+pub trait FooTrait;
+
+pub struct FooStruct;
+"#,
+        expect![[r#"
+            tt FooTrait (use dep::FooTrait)
+        "#]],
+    );
+}
+
+#[test]
+fn primitive_mod() {
+    check(
+        r#"
+//- minicore: str
+fn main() {
+    str::from$0
+}
+"#,
+        expect![[r#"
+            fn from_utf8_unchecked(…) (use core::str) const unsafe fn(&[u8]) -> &str
+        "#]],
+    );
+}
+
+#[test]
+fn trait_impl_on_slice_method_on_deref_slice_type() {
+    check(
+        r#"
+//- minicore: deref, sized
+struct SliceDeref;
+impl core::ops::Deref for SliceDeref {
+    type Target = [()];
+
+    fn deref(&self) -> &Self::Target {
+        &[]
+    }
+}
+fn main() {
+    SliceDeref.choose$0();
+}
+mod module {
+    pub(super) trait SliceRandom {
+        type Item;
+
+        fn choose(&self);
+    }
+
+    impl<T> SliceRandom for [T] {
+        type Item = T;
+
+        fn choose(&self) {}
+    }
+}
+"#,
+        expect![[r#"
+            me choose (use module::SliceRandom) fn(&self)
+        "#]],
+    );
 }
