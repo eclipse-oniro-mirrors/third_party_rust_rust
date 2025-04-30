@@ -110,9 +110,6 @@ pushd $CURRENT_DIR > /dev/null
 popd > /dev/null
 
 EXTRA_PATH=$CURRENT_DIR/tmp_rust/extra
-pushd $EXTRA_PATH/rustlib > /dev/null
-    unzip src.zip
-popd > /dev/null
 
 if [[ ! -d $CURRENT_DIR/build/dist ]]; then
     echo "rust build fail"
