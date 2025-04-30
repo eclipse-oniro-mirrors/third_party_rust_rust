@@ -132,7 +132,7 @@ pushd $CURRENT_DIR/build/dist > /dev/null
 	cp $package_dir/rust-toolchain/lib/libclang.so $package_dir/rust-toolchain/lib/libclang.so.20.0.0git
 	cp $package_dir/rust-toolchain/lib/libclang.so $package_dir/rust-toolchain/lib/libclang.so.20.0git
 	cp -rf $EXTRA_PATH/rustlib/src $package_dir/rust-toolchain/lib/rustlib/
-    cp -rf $EXTRA_PATH/bin/* $package_dir/rust-toolchain/bin/
+    cp -rf $EXTRA_PATH/bin/* $package_dir/rust-toolchain/bin/ && chmod 755 $package_dir/rust-toolchain/bin/bindgen
     rm -rf $package_dir/rust-toolchain/lib/rustlib/x86_64-unknown-linux-gnu/bin
 popd > /dev/null
 echo "extra files add finish"
