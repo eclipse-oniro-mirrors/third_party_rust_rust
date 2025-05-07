@@ -37,7 +37,12 @@ pushd $CURRENT_DIR > /dev/null
 	if [[ ! -d src/llvm-project ]]; then
 	  mkdir -p src/llvm-project
 	fi
-	cp -rf tmp_rust/src/llvm-project/* src/llvm-project/
+    pushd src > /dev/null
+      rm -rf llvm-project
+      git clone https://gitee.com/openharmony/third_party_llvm-project.git -b llvm-19.1.7
+      mv third_party_llvm-project llvm-prject && rm -rf llvm-project/.git
+    popd > /dev/null
+	#cp -rf tmp_rust/src/llvm-project/* src/llvm-project/
 
 	if [[ ! -d src/tools/enzyme ]]; then
 	  mkdir -p src/tools/enzyme
