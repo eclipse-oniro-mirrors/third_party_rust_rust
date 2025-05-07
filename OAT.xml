@@ -22,6 +22,7 @@
         <licensefile>COPYRIGHT</licensefile>
         <policylist>
             <policy name="defaultPloicy" desc="">
+                <policyitem type="compatibility" name="GPL-2.0+-with-LLVM-exception" path="NOTICE" desc="增加Apache 2.0 with LLVM Exception协议，不会造成GPL协议污染"/>
             </policy>
         </policylist>
         <filefilterlist>
