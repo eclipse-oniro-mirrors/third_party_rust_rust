@@ -40,7 +40,7 @@ pushd $CURRENT_DIR > /dev/null
     pushd src > /dev/null
       rm -rf llvm-project
       git clone https://gitee.com/openharmony/third_party_llvm-project.git -b llvm-19.1.7
-      mv third_party_llvm-project llvm-prject && rm -rf llvm-project/.git
+      mv third_party_llvm-project llvm-project && rm -rf llvm-project/.git
     popd > /dev/null
 	#cp -rf tmp_rust/src/llvm-project/* src/llvm-project/
 
