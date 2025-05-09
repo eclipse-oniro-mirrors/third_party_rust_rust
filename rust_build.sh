@@ -26,8 +26,8 @@ pushd $CURRENT_DIR > /dev/null
 	  wget https://repo.huaweicloud.com/harmonyos/compiler/rust/1.83.0/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz
 	popd > /dev/null
 	# 获取rust_src包
-	wget https://repo.huaweicloud.com/harmonyos/compiler/rust/1.84.0/rust_src.tar.gz
-	mkdir tmp_rust && tar -zxvf rust_src.tar.gz -C tmp_rust/
+	wget https://repo.huaweicloud.com/harmonyos/compiler/rust/1.84.0/rust_src_20250508.tar.gz
+	mkdir tmp_rust && tar -zxvf rust_src_20250508.tar.gz -C tmp_rust/
 
 	if [[ ! -d src/gcc ]]; then
 	  mkdir -p src/gcc
@@ -42,7 +42,6 @@ pushd $CURRENT_DIR > /dev/null
       git clone https://gitee.com/openharmony/third_party_llvm-project.git -b llvm-19.1.7
       mv third_party_llvm-project llvm-project && rm -rf llvm-project/.git
     popd > /dev/null
-	#cp -rf tmp_rust/src/llvm-project/* src/llvm-project/
 
 	if [[ ! -d src/tools/enzyme ]]; then
 	  mkdir -p src/tools/enzyme
@@ -134,8 +133,8 @@ pushd $CURRENT_DIR/build/dist > /dev/null
     popd > /dev/null
     
     cp -rf $EXTRA_PATH/libclang* $package_dir/rust-toolchain/lib/
-	cp $package_dir/rust-toolchain/lib/libclang.so $package_dir/rust-toolchain/lib/libclang.so.20.0.0git
-	cp $package_dir/rust-toolchain/lib/libclang.so $package_dir/rust-toolchain/lib/libclang.so.20.0git
+	cp $package_dir/rust-toolchain/lib/libclang.so $package_dir/rust-toolchain/lib/libclang.so.19.1.7git
+	cp $package_dir/rust-toolchain/lib/libclang.so $package_dir/rust-toolchain/lib/libclang.so.19.1git
 	cp -rf $EXTRA_PATH/rustlib/src $package_dir/rust-toolchain/lib/rustlib/
     cp -rf $EXTRA_PATH/bin/* $package_dir/rust-toolchain/bin/ && chmod 755 $package_dir/rust-toolchain/bin/bindgen
     rm -rf $package_dir/rust-toolchain/lib/rustlib/x86_64-unknown-linux-gnu/bin
