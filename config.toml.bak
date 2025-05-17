@@ -1,0 +1,27 @@
+[llvm]
+download-ci-llvm = false  # 使用预编译LLVM加速
+
+[build]
+target = ["aarch64-unknown-linux-ohos", "armv7-unknown-linux-ohos"]  # 目标平台
+extended = true  # 构建完整的工具链（包括 rustfmt、clippy 等）
+tools = ["cargo", "rustfmt", "clippy", "rust-analyzer", "miri", "llvm-tools", "src", "rustdoc", "analysis", "rust-analyzer-proc-macro-srv", "wasm-component-ld", "cargo-miri"]  # 包含的工具
+profiler = true
+
+[rust]
+channel = "dev"
+profile-generate = "true"
+
+[install]
+prefix = "/usr/local"
+
+[target.aarch64-unknown-linux-ohos]
+cc = "replace_path/aarch64-unknown-linux-ohos-clang"
+cxx = "replace_path/aarch64-unknown-linux-ohos-clang++"
+linker = "replace_path/aarch64-unknown-linux-ohos-clang"
+ar = "replace_path/llvm-ar"
+
+[target.armv7-unknown-linux-ohos]
+cc = "replace_path/armv7-unknown-linux-ohos-clang"
+cxx = "replace_path/armv7-unknown-linux-ohos-clang++"
+linker = "replace_path/armv7-unknown-linux-ohos-clang"
+ar = "replace_path/llvm-ar"
