@@ -111,6 +111,22 @@ pushd $CURRENT_DIR > /dev/null
     echo "dist rust-dev build start ..."
 	python3 x.py dist
     echo "dist rust build end"
+
+    # aarch64 armv7 build
+    mv config.toml config.toml.bak1
+    mv config.toml.bak config.toml
+    mkdir -p harmony/build
+    git clone https://gitee.com/openharmony/build.git harmony/build
+    pip3 install -i https://repo.huaweicloud.com/repository/pypi/simple requests
+    pushd harmony/build > /dev/null
+        python3 ./harmony/build/scripts/download_sdk.py --branch OpenHarmony-5.1.0-Release --product-name ohos-sdk-full_api_5.1.0-Release --api-version 18
+    popd > /dev/null
+    replace_path="$CURRENT_DIR/harmony/prebuilts/ohos-sdk/linux/18/native/llvm/bin"
+    sed -i 's|replace_path|'"$replace_path"'|g' config.toml
+    echo "aarch64 and armv7 stage2 build start ..."
+    python3 x.py build --stage 2
+    echo "aarch64 and armv7 stage2 build end"
+    python3 x.py dist
 popd > /dev/null
 
 EXTRA_PATH=$CURRENT_DIR/tmp_rust/extra
@@ -131,6 +147,12 @@ pushd $CURRENT_DIR/build/dist > /dev/null
         echo "----------rust build finish------------"
         mkdir -p rust-toolchain/lib/rustlib/src
     popd > /dev/null
+
+    tar -zxvf rust-std-1.84.0-dev-aarch64-unknown-linux-ohos.tar.gz
+    cp -rf rust-std-1.84.0-dev-aarch64-unknown-linux-ohos/rust-std-aarch64-unknown-linux-ohos/lib/rustlib/aarch64-unknown-linux-ohos rust-1.84.0-dev-x86_64-unknown-linux-gnu/rust-toolchain/lib/rustlib/
+
+    tar -zxvf rust-std-1.84.0-dev-armv7-unknown-linux-ohos.tar.gz
+    cp -rf rust-std-1.84.0-dev-armv7-unknown-linux-ohos/rust-std-armv7-unknown-linux-ohos/lib/rustlib/armv7-unknown-linux-ohos rust-1.84.0-dev-x86_64-unknown-linux-gnu/rust-toolchain/lib/rustlib/
     
     cp -rf $EXTRA_PATH/libclang* $package_dir/rust-toolchain/lib/
 	cp $package_dir/rust-toolchain/lib/libclang.so $package_dir/rust-toolchain/lib/libclang.so.19.1.7git
