@@ -1,0 +1,12 @@
+[
+  {
+    "Name": "Rust",
+    "License": "Apache-2.0;MIT",
+    "License File": "LICENSE-APACHE;LICENSE-MIT",
+    "Version Number": "1.72.0",
+    "Owner": "qilin.wang@huawei.com",
+    "Upstream URL": "https://github.com/rust-lang/rust",
+    "Description": "A language empowering everyone to build reliable and efficient software.",
+    "Dependencies": ["LLVM"]
+  }
+]

@@ -1,0 +1,3 @@
+#!/bin/bash
+
+exec aarch64-unknown-linux-ohos-clang -Imusl -fstack-protector-all "$@"
