@@ -1,0 +1,3 @@
+#!/bin/bash
+
+exec x86_64-w64-mingw32-clang++ -fstack-protector-all "$@"
